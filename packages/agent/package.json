@@ -1,0 +1,15 @@
+{
+  "name": "@horizon/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/main.ts",
+    "build": "esbuild src/main.ts --bundle --platform=node --format=esm --outfile=dist/agent.mjs",
+    "start": "node dist/agent.mjs",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@horizon/protocol": "*"
+  }
+}

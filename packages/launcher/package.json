@@ -1,0 +1,10 @@
+{
+  "name": "@horizon/launcher",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --platform=node --format=esm --outfile=dist/launcher.mjs",
+    "typecheck": "tsc -p ."
+  }
+}
