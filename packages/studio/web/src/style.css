@@ -148,3 +148,35 @@ aside form input {
   flex: 1;
   font: inherit;
 }
+.permission {
+  border: 1px solid #f08c00;
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.permission pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--soft);
+  padding: 0.5rem;
+}
+.permission .actions {
+  display: flex;
+  gap: 0.5rem;
+}
+aside select {
+  width: 100%;
+}
+.mode {
+  font-size: 0.75rem;
+  font-weight: normal;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--soft);
+  vertical-align: middle;
+}
+.mode.auto {
+  color: #d9480f;
+}

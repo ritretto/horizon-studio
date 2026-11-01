@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { SessionEvent, SessionItem, Task } from '@horizon/protocol';
+import type { PermissionMode, SessionEvent, SessionItem, Task } from '@horizon/protocol';
 import type { Engine, EngineRun } from './engine.ts';
 import type { Member } from './members.ts';
 
@@ -31,12 +31,13 @@ export class Tasks {
     }
   }
 
-  create(name: string, owner: Member): Task {
+  create(name: string, owner: Member, permissionMode: PermissionMode): Task {
     const task: StoredTask = {
       id: randomUUID(),
       name,
       ownerId: owner.id,
       engine: 'claude-code',
+      permissionMode,
       createdAt: new Date().toISOString(),
       sessions: [{ id: randomUUID() }],
     };
@@ -78,12 +79,15 @@ export class Session {
   private seq: number;
   private listeners = new Set<Listener>();
   private run?: EngineRun;
+  private pending = new Map<string, (answer: { allow: boolean; always: boolean }) => void>();
+  private permissionMode: PermissionMode;
   private stored: StoredTask['sessions'][number];
   private engine: Engine;
   private save: () => void;
 
   constructor(dir: string, task: Task, stored: StoredTask['sessions'][number], engine: Engine, save: () => void) {
     this.stored = stored;
+    this.permissionMode = task.permissionMode;
     this.engine = engine;
     this.save = save;
     this.cwd = join(dir, task.id, 'workspace');
@@ -101,8 +105,24 @@ export class Session {
         this.stored.engineSessionId = id;
         this.save();
       },
+      askPermission: (req) => {
+        if (this.permissionMode === 'auto') return Promise.resolve({ allow: true, always: false });
+        const requestId = randomUUID();
+        this.append({ kind: 'permission', requestId, ...req });
+        return new Promise((resolve) => this.pending.set(requestId, resolve));
+      },
     });
     this.run.send(text);
+  }
+
+  /** Ответ на запрос разрешения; false, если такого ожидающего запроса нет. */
+  answer(requestId: string, allow: boolean, always: boolean): boolean {
+    const resolve = this.pending.get(requestId);
+    if (!resolve) return false;
+    this.pending.delete(requestId);
+    this.append({ kind: 'permission_answer', requestId, allow, always });
+    resolve({ allow, always });
+    return true;
   }
 
   /** Отдаёт историю с seq > fromSeq, затем новые события; возвращает отписку. */

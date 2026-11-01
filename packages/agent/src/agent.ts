@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { AgentHello, AgentInfo, Request, Response } from '@horizon/protocol';
+import type { AgentHello, AgentInfo, PermissionMode, Request, Response } from '@horizon/protocol';
 import pkg from '../package.json' with { type: 'json' };
 import { claudeCode, type Engine } from './engine.ts';
 import { Members, type Member } from './members.ts';
@@ -14,9 +14,16 @@ export interface StartedAgent {
   adminToken?: string;
 }
 
-export function startAgent(home: string, port: number, engine: Engine = claudeCode): Promise<StartedAgent> {
+export interface AgentOptions {
+  engine?: Engine;
+  /** Permission Mode для новых Task, если он не указан явно (из конфига Agent). */
+  defaultPermissionMode?: PermissionMode;
+}
+
+export function startAgent(home: string, port: number, opts: AgentOptions = {}): Promise<StartedAgent> {
   const members = new Members(home);
-  const tasks = new Tasks(home, engine);
+  const tasks = new Tasks(home, opts.engine ?? claudeCode);
+  const defaultPermissionMode = opts.defaultPermissionMode ?? 'ask';
   const adminToken = members.isEmpty ? members.create('admin', 'admin') : undefined;
 
   const server = createServer((req, res) => {
@@ -46,7 +53,7 @@ export function startAgent(home: string, port: number, engine: Engine = claudeCo
           ws.close(1003, 'invalid JSON');
           return;
         }
-        ws.send(JSON.stringify(handle(req, { member, tasks, ws, subscriptions })));
+        ws.send(JSON.stringify(handle(req, { member, tasks, ws, subscriptions, defaultPermissionMode })));
       });
     });
   });
@@ -59,9 +66,12 @@ interface Context {
   tasks: Tasks;
   ws: WebSocket;
   subscriptions: Map<string, () => void>;
+  defaultPermissionMode: PermissionMode;
 }
 
-function handle(req: Request, { member, tasks, ws, subscriptions }: Context): Response {
+const permissionModes: PermissionMode[] = ['ask', 'auto'];
+
+function handle(req: Request, { member, tasks, ws, subscriptions, defaultPermissionMode }: Context): Response {
   const ok = (result: unknown): Response => ({ type: 'response', id: req.id, result });
   const fail = (message: string): Response => ({ type: 'response', id: req.id, error: { message } });
   const p = (req.params ?? {}) as Record<string, any>;
@@ -76,7 +86,8 @@ function handle(req: Request, { member, tasks, ws, subscriptions }: Context): Re
     }
     case 'task.create':
       if (typeof p.name !== 'string' || !p.name.trim()) return fail('name is required');
-      return ok(tasks.create(p.name.trim(), member));
+      if (p.permissionMode !== undefined && !permissionModes.includes(p.permissionMode)) return fail('invalid permissionMode');
+      return ok(tasks.create(p.name.trim(), member, p.permissionMode ?? defaultPermissionMode));
     case 'task.list':
       return ok(tasks.list(member));
     case 'session.send': {
@@ -84,6 +95,12 @@ function handle(req: Request, { member, tasks, ws, subscriptions }: Context): Re
       if (!session) return fail('unknown session');
       if (typeof p.text !== 'string' || !p.text.trim()) return fail('text is required');
       session.send(p.text);
+      return ok(null);
+    }
+    case 'session.answer': {
+      const session = tasks.session(p.sessionId, member);
+      if (!session) return fail('unknown session');
+      if (!session.answer(String(p.requestId), p.allow === true, p.always === true)) return fail('no such pending request');
       return ok(null);
     }
     case 'session.subscribe': {

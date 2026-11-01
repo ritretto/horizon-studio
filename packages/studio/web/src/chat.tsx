@@ -2,12 +2,25 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { SessionItem, StudioSessionEvent } from '@horizon/protocol';
 
 type ToolResult = Extract<SessionItem, { kind: 'tool_result' }>;
+type Answer = Extract<SessionItem, { kind: 'permission_answer' }>;
+export type OnAnswer = (requestId: string, allow: boolean, always: boolean) => void;
 
-export function Chat({ events, onSend }: { events: StudioSessionEvent[]; onSend(text: string): void }) {
+interface Props {
+  events: StudioSessionEvent[];
+  onSend(text: string): void;
+  onAnswer: OnAnswer;
+}
+
+export function Chat({ events, onSend, onAnswer }: Props) {
   const [text, setText] = useState('');
   const end = useRef<HTMLDivElement>(null);
   const results = new Map<string, ToolResult>();
-  for (const e of events) if (e.item.kind === 'tool_result') results.set(e.item.id, e.item);
+  const answers = new Map<string, Answer>();
+  for (const e of events) {
+    if (e.item.kind === 'tool_result') results.set(e.item.id, e.item);
+    if (e.item.kind === 'permission_answer') answers.set(e.item.requestId, e.item);
+  }
+  const waiting = events.some((e) => e.item.kind === 'permission' && !answers.has(e.item.requestId));
   const busy = events.length > 0 && events[events.length - 1].item.kind !== 'turn_end';
 
   // Без фигурных скобок нельзя: в новых браузерах scrollIntoView возвращает Promise, а React примет его за cleanup.
@@ -27,9 +40,9 @@ export function Chat({ events, onSend }: { events: StudioSessionEvent[]; onSend(
       <div className="items">
         {events.length === 0 && <p className="muted">Напишите, что нужно сделать.</p>}
         {events.map((e) => (
-          <Item key={e.seq} item={e.item} results={results} />
+          <Item key={e.seq} item={e.item} results={results} answers={answers} onAnswer={onAnswer} />
         ))}
-        {busy && <p className="muted">Claude работает…</p>}
+        {waiting ? <p className="warn">Ждёт вашего решения</p> : busy && <p className="muted">Claude работает…</p>}
         <div ref={end} />
       </div>
       <form className="composer" onSubmit={submit}>
@@ -46,7 +59,14 @@ export function Chat({ events, onSend }: { events: StudioSessionEvent[]; onSend(
   );
 }
 
-function Item({ item, results }: { item: SessionItem; results: Map<string, ToolResult> }) {
+interface ItemProps {
+  item: SessionItem;
+  results: Map<string, ToolResult>;
+  answers: Map<string, Answer>;
+  onAnswer: OnAnswer;
+}
+
+function Item({ item, results, answers, onAnswer }: ItemProps) {
   switch (item.kind) {
     case 'user':
       return <div className="msg user">{item.text}</div>;
@@ -64,8 +84,35 @@ function Item({ item, results }: { item: SessionItem; results: Map<string, ToolR
         </details>
       );
     }
+    case 'permission': {
+      const answer = answers.get(item.requestId);
+      return (
+        <div className="permission">
+          <div>
+            Claude хочет выполнить <strong>{item.tool}</strong> <span className="muted">{summary(item.input)}</span>
+          </div>
+          {item.reason && <div className="muted">{item.reason}</div>}
+          <details>
+            <summary>Подробности</summary>
+            <pre>{JSON.stringify(item.input, null, 2)}</pre>
+          </details>
+          {answer ? (
+            <div className={answer.allow ? 'muted' : 'warn'}>
+              {answer.allow ? (answer.always ? 'Разрешено всегда для этой Session' : 'Разрешено') : 'Запрещено'}
+            </div>
+          ) : (
+            <div className="actions">
+              <button onClick={() => onAnswer(item.requestId, true, false)}>Разрешить</button>
+              <button onClick={() => onAnswer(item.requestId, true, true)}>Разрешать всегда</button>
+              <button onClick={() => onAnswer(item.requestId, false, false)}>Запретить</button>
+            </div>
+          )}
+        </div>
+      );
+    }
     case 'tool_result':
-      return null; // показывается внутри своего tool
+    case 'permission_answer':
+      return null; // показываются внутри своего tool / permission
     case 'turn_end':
       return item.error ? <p className="warn">Ход завершился с ошибкой: {item.error}</p> : null;
     case 'error':
@@ -76,5 +123,5 @@ function Item({ item, results }: { item: SessionItem; results: Map<string, ToolR
 function summary(input: unknown): string {
   const v = input as Record<string, unknown>;
   const s = String(v?.command ?? v?.file_path ?? v?.pattern ?? v?.url ?? '');
-  return s.length > 80 ? s.slice(0, 80) + '…' : s;
+  return s.length > 80 ? '…' + s.slice(-80) : s; // у путей важен конец
 }

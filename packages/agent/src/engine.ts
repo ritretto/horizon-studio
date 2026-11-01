@@ -13,6 +13,8 @@ export interface EngineOptions {
   resume?: string;
   onItem(item: SessionItem): void;
   onEngineSessionId(id: string): void;
+  /** Решение по запросу разрешения; `always` — больше не спрашивать о таком в этой Session. */
+  askPermission(req: { tool: string; input: unknown; reason?: string }): Promise<{ allow: boolean; always: boolean }>;
 }
 
 export type Engine = (opts: EngineOptions) => EngineRun;
@@ -25,8 +27,14 @@ export const claudeCode: Engine = (opts) => {
     options: {
       cwd: opts.cwd,
       resume: opts.resume,
-      // ponytail: до #5 любой запрос разрешения отклоняется — Engine может читать и отвечать, но не менять.
-      canUseTool: async () => ({ behavior: 'deny', message: 'Разрешения ещё не поддерживаются в HorizonStudio' }),
+      // Вопросы Engine задаёт обычным текстом в конце хода, пользователь отвечает в чате.
+      disallowedTools: ['AskUserQuestion'],
+      canUseTool: async (tool, input, { suggestions, decisionReason }) => {
+        const { allow, always } = await opts.askPermission({ tool, input, reason: decisionReason });
+        return allow
+          ? { behavior: 'allow', updatedInput: input, updatedPermissions: always ? suggestions : undefined }
+          : { behavior: 'deny', message: 'Пользователь отклонил это действие' };
+      },
     },
   });
 

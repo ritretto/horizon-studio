@@ -1,9 +1,14 @@
 import { StrictMode, useEffect, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { AgentStatus, Task } from '@horizon/protocol';
+import type { AgentStatus, PermissionMode, Task } from '@horizon/protocol';
 import { useStudio } from './studio.ts';
 import { Chat } from './chat.tsx';
 import './style.css';
+
+const modeLabel: Record<PermissionMode, string> = {
+  ask: 'спрашивать разрешения',
+  auto: 'всё разрешено',
+};
 
 const stateLabel: Record<AgentStatus['state'], string> = {
   connecting: 'подключение…',
@@ -40,7 +45,8 @@ function App() {
   async function createTask(agentId: string, e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = e.currentTarget;
-    const res = await request('task.create', { name: new FormData(form).get('name') }, agentId);
+    const data = new FormData(form);
+    const res = await request('task.create', { name: data.get('name'), permissionMode: data.get('permissionMode') || undefined }, agentId);
     if ('error' in res) return setError(res.error.message);
     form.reset();
     await loadTasks(agentId);
@@ -98,6 +104,11 @@ function App() {
                 <form onSubmit={(e) => createTask(a.id, e)}>
                   <input name="name" placeholder="Новая Task" required />
                   <button>+</button>
+                  <select name="permissionMode" aria-label="Permission Mode" defaultValue="">
+                    <option value="">Разрешения: по умолчанию Agent</option>
+                    <option value="ask">Спрашивать разрешения</option>
+                    <option value="auto">Разрешать всё без вопросов</option>
+                  </select>
                 </form>
               </>
             )}
@@ -119,11 +130,16 @@ function App() {
       <main>
         {selected && sessionId ? (
           <>
-            <h2>{selected.task.name}</h2>
+            <h2>
+              {selected.task.name} <span className={`mode ${selected.task.permissionMode}`}>{modeLabel[selected.task.permissionMode]}</span>
+            </h2>
             {!agentOnline && <p className="warn">Agent недоступен — Session продолжает работать на нём, история подгрузится после переподключения.</p>}
             <Chat
               events={events[sessionId] ?? []}
               onSend={(text) => request('session.send', { sessionId, text }, selected.agentId)}
+              onAnswer={(requestId, allow, always) =>
+                request('session.answer', { sessionId, requestId, allow, always }, selected.agentId)
+              }
             />
           </>
         ) : (

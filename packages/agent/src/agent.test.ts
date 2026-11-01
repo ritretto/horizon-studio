@@ -75,7 +75,7 @@ function client(ws: WebSocket) {
 
 test('Task: создание, Session с историей по seq, продолжение после перезапуска Agent', async () => {
   const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
-  const a1 = await startAgent(home, 0, echo);
+  const a1 = await startAgent(home, 0, { engine: echo });
   const c1 = client(await connect((a1.server.address() as AddressInfo).port, a1.adminToken!));
 
   const task: Task = await c1.call('task.create', { name: 'OAuth' });
@@ -89,7 +89,7 @@ test('Task: создание, Session с историей по seq, продол
   a1.server.close();
 
   // Новый процесс Agent на том же Agent Home: Task на месте, история с seq, Engine продолжает разговор.
-  const a2 = await startAgent(home, 0, echo);
+  const a2 = await startAgent(home, 0, { engine: echo });
   const c2 = client(await connect((a2.server.address() as AddressInfo).port, a1.adminToken!));
   assert.equal((await c2.call('task.list')).length, 1);
   await c2.call('session.subscribe', { sessionId, fromSeq: 1 });
@@ -99,4 +99,48 @@ test('Task: создание, Session с историей по seq, продол
   assert.deepEqual(resumes, [undefined, 'engine-session-1']);
   c2.close();
   a2.server.close();
+});
+
+/** Фейковый Engine: на каждое сообщение просит разрешение на Bash и сообщает решение. */
+const asker: Engine = ({ onItem, askPermission }) => ({
+  send: async () => {
+    const { allow, always } = await askPermission({ tool: 'Bash', input: { command: 'ls' } });
+    onItem({ kind: 'text', text: allow ? `allowed${always ? ' always' : ''}` : 'denied' });
+    onItem({ kind: 'turn_end' });
+  },
+  close: () => {},
+});
+
+test('Permission Mode: ask ждёт ответа пользователя, auto разрешает сам', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
+  const a = await startAgent(home, 0, { engine: asker, defaultPermissionMode: 'auto' });
+  const c = client(await connect((a.server.address() as AddressInfo).port, a.adminToken!));
+
+  const ask: Task = await c.call('task.create', { name: 'ask', permissionMode: 'ask' });
+  assert.equal(ask.permissionMode, 'ask');
+  const askSession = ask.sessions[0].id;
+  await c.call('session.subscribe', { sessionId: askSession, fromSeq: 0 });
+  await c.call('session.send', { sessionId: askSession, text: 'go' });
+  const [, request] = await c.until(2);
+  assert.equal(request.item.kind, 'permission');
+  const requestId = (request.item as { requestId: string }).requestId;
+  await c.call('session.answer', { sessionId: askSession, requestId, allow: true, always: true });
+  const events = await c.until(5);
+  assert.deepEqual(events.slice(2).map((e) => e.item), [
+    { kind: 'permission_answer', requestId, allow: true, always: true },
+    { kind: 'text', text: 'allowed always' },
+    { kind: 'turn_end' },
+  ]);
+  assert.equal(await c.call('session.answer', { sessionId: askSession, requestId, allow: true }), undefined, 'повторный ответ отклоняется');
+
+  const auto: Task = await c.call('task.create', { name: 'auto' });
+  assert.equal(auto.permissionMode, 'auto', 'по умолчанию — из конфига Agent');
+  await c.call('session.subscribe', { sessionId: auto.sessions[0].id, fromSeq: 0 });
+  await c.call('session.send', { sessionId: auto.sessions[0].id, text: 'go' });
+  const autoEvents = (await c.until(8)).slice(5);
+  assert.deepEqual(autoEvents.map((e) => e.item.kind), ['user', 'text', 'turn_end']);
+  assert.deepEqual(autoEvents[1].item, { kind: 'text', text: 'allowed' });
+
+  c.close();
+  a.server.close();
 });

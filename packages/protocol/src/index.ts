@@ -26,11 +26,15 @@ export type Response =
 
 export type EngineId = 'claude-code';
 
+/** `ask` — каждый запрос разрешения ждёт ответа пользователя (Session в Waiting); `auto` — всё разрешается. */
+export type PermissionMode = 'ask' | 'auto';
+
 export interface Task {
   id: string;
   name: string;
   ownerId: string;
   engine: EngineId;
+  permissionMode: PermissionMode;
   createdAt: string;
   sessions: { id: string }[];
 }
@@ -41,6 +45,8 @@ export type SessionItem =
   | { kind: 'text'; text: string }
   | { kind: 'tool'; id: string; name: string; input: unknown }
   | { kind: 'tool_result'; id: string; output: string; isError: boolean }
+  | { kind: 'permission'; requestId: string; tool: string; input: unknown; reason?: string }
+  | { kind: 'permission_answer'; requestId: string; allow: boolean; always: boolean }
   | { kind: 'turn_end'; error?: string }
   | { kind: 'error'; message: string };
 
