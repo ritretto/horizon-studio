@@ -20,8 +20,8 @@ npm test
 npm run build
 
 npm run dev -w @horizon/agent -- --home ./.agent-home  # Agent; Agent Home по умолчанию ~/.horizon-agent
-npm run dev -w @horizon/studio         # фронт Studio (Vite)
-npm run dev:server -w @horizon/studio  # Studio-сервер на 127.0.0.1:7300 (HORIZON_STUDIO_PORT), отдаёт собранный фронт
+npm run dev:server -w @horizon/studio  # Studio-сервер на 127.0.0.1:7300 (HORIZON_STUDIO_PORT), конфиг --config, по умолчанию ~/.horizon-studio/config.json
+npm run dev -w @horizon/studio         # фронт Studio (Vite), /ws проксируется на Studio-сервер
 ```
 
 При первом старте Agent создаёт Member `admin` и один раз печатает его Access Token. Порт задаётся в `<Agent Home>/config.json` (`{"port": 7400}` по умолчанию). Подключение — WebSocket с заголовком `Authorization: Bearer <token>`.

@@ -8,15 +8,20 @@
     "dev:server": "node --watch src/server.ts",
     "build": "vite build && esbuild src/server.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server.mjs",
     "start": "node dist/server.mjs",
-    "typecheck": "tsc -p . && tsc -p web"
+    "typecheck": "tsc -p . && tsc -p web",
+    "test": "node --test src/*.test.ts"
   },
   "dependencies": {
+    "@horizon/protocol": "*",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "ws": "^8.22.1"
   },
   "devDependencies": {
+    "@horizon/agent": "^0.1.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
     "@vitejs/plugin-react": "^6.1.2",
     "vite": "^8.3.5"
   }
