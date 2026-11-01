@@ -180,3 +180,16 @@ aside select {
 .mode.auto {
   color: #d9480f;
 }
+.task-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.divider {
+  text-align: center;
+  font-size: 0.8rem;
+  opacity: 0.6;
+  border-top: 1px dashed var(--line);
+  padding-top: 0.3rem;
+}

@@ -7,11 +7,12 @@ export type OnAnswer = (requestId: string, allow: boolean, always: boolean) => v
 
 interface Props {
   events: StudioSessionEvent[];
+  paused: boolean;
   onSend(text: string): void;
   onAnswer: OnAnswer;
 }
 
-export function Chat({ events, onSend, onAnswer }: Props) {
+export function Chat({ events, paused, onSend, onAnswer }: Props) {
   const [text, setText] = useState('');
   const end = useRef<HTMLDivElement>(null);
   const results = new Map<string, ToolResult>();
@@ -21,7 +22,8 @@ export function Chat({ events, onSend, onAnswer }: Props) {
     if (e.item.kind === 'permission_answer') answers.set(e.item.requestId, e.item);
   }
   const waiting = events.some((e) => e.item.kind === 'permission' && !answers.has(e.item.requestId));
-  const busy = events.length > 0 && events[events.length - 1].item.kind !== 'turn_end';
+  const last = events.filter((e) => e.item.kind !== 'status').at(-1);
+  const busy = !paused && !!last && last.item.kind !== 'turn_end';
 
   // Без фигурных скобок нельзя: в новых браузерах scrollIntoView возвращает Promise, а React примет его за cleanup.
   useEffect(() => {
@@ -42,7 +44,13 @@ export function Chat({ events, onSend, onAnswer }: Props) {
         {events.map((e) => (
           <Item key={e.seq} item={e.item} results={results} answers={answers} onAnswer={onAnswer} />
         ))}
-        {waiting ? <p className="warn">Ждёт вашего решения</p> : busy && <p className="muted">Claude работает…</p>}
+        {paused ? (
+          <p className="muted">Task на паузе</p>
+        ) : waiting ? (
+          <p className="warn">Ждёт вашего решения</p>
+        ) : (
+          busy && <p className="muted">Claude работает…</p>
+        )}
         <div ref={end} />
       </div>
       <form className="composer" onSubmit={submit}>
@@ -50,10 +58,11 @@ export function Chat({ events, onSend, onAnswer }: Props) {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && (e.metaKey || e.ctrlKey) && submit(e)}
-          placeholder="Сообщение (⌘/Ctrl+Enter — отправить)"
+          placeholder={paused ? 'Task на паузе — нажмите «Продолжить»' : 'Сообщение (⌘/Ctrl+Enter — отправить)'}
+          disabled={paused}
           rows={3}
         />
-        <button>Отправить</button>
+        <button disabled={paused}>Отправить</button>
       </form>
     </section>
   );
@@ -113,6 +122,8 @@ function Item({ item, results, answers, onAnswer }: ItemProps) {
     case 'tool_result':
     case 'permission_answer':
       return null; // показываются внутри своего tool / permission
+    case 'status':
+      return <div className="divider">{item.status === 'paused' ? 'Пауза' : 'Продолжено'}</div>;
     case 'turn_end':
       return item.error ? <p className="warn">Ход завершился с ошибкой: {item.error}</p> : null;
     case 'error':

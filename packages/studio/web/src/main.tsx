@@ -20,7 +20,8 @@ const stateLabel: Record<AgentStatus['state'], string> = {
 function App() {
   const { agents, connected, events, request } = useStudio();
   const [tasks, setTasks] = useState<Record<string, Task[]>>({});
-  const [selected, setSelected] = useState<{ agentId: string; task: Task }>();
+  const [selected, setSelected] = useState<{ agentId: string; taskId: string }>();
+  const task = selected && tasks[selected.agentId]?.find((t) => t.id === selected.taskId);
   const [error, setError] = useState('');
 
   const online = agents.filter((a) => a.state === 'online').map((a) => a.id).join();
@@ -33,7 +34,7 @@ function App() {
   }, [online]);
 
   // Подписка на Session выбранной Task; после переподключения Agent — заново, с последнего seq.
-  const sessionId = selected?.task.sessions[0].id;
+  const sessionId = task?.sessions[0].id;
   const agentOnline = !!selected && online.split(',').includes(selected.agentId);
   useEffect(() => {
     if (!selected || !sessionId || !agentOnline) return;
@@ -50,7 +51,18 @@ function App() {
     if ('error' in res) return setError(res.error.message);
     form.reset();
     await loadTasks(agentId);
-    setSelected({ agentId, task: res.result as Task });
+    setSelected({ agentId, taskId: (res.result as Task).id });
+  }
+
+  // Состояние паузы берём из событий Session — так его сразу видят все Studio.
+  const status = sessionId ? events[sessionId]?.findLast((e) => e.item.kind === 'status')?.item : undefined;
+  const paused = status?.kind === 'status' ? status.status === 'paused' : task?.state === 'paused';
+
+  async function setPaused(pause: boolean) {
+    if (!selected || !task) return;
+    const res = await request(pause ? 'task.pause' : 'task.resume', { taskId: task.id }, selected.agentId);
+    if ('error' in res) setError(res.error.message);
+    await loadTasks(selected.agentId);
   }
 
   async function addConnection(e: FormEvent<HTMLFormElement>) {
@@ -93,9 +105,10 @@ function App() {
                   {(tasks[a.id] ?? []).map((t) => (
                     <li key={t.id}>
                       <button
-                        className={selected?.task.id === t.id ? 'active' : ''}
-                        onClick={() => setSelected({ agentId: a.id, task: t })}
+                        className={selected?.taskId === t.id ? 'active' : ''}
+                        onClick={() => setSelected({ agentId: a.id, taskId: t.id })}
                       >
+                        {t.state === 'paused' && <span title="На паузе">⏸ </span>}
                         {t.name}
                       </button>
                     </li>
@@ -128,14 +141,18 @@ function App() {
       </aside>
 
       <main>
-        {selected && sessionId ? (
+        {selected && task && sessionId ? (
           <>
-            <h2>
-              {selected.task.name} <span className={`mode ${selected.task.permissionMode}`}>{modeLabel[selected.task.permissionMode]}</span>
-            </h2>
+            <header className="task-head">
+              <h2>
+                {task.name} <span className={`mode ${task.permissionMode}`}>{modeLabel[task.permissionMode]}</span>
+              </h2>
+              {agentOnline && <button onClick={() => setPaused(!paused)}>{paused ? 'Продолжить' : 'Пауза'}</button>}
+            </header>
             {!agentOnline && <p className="warn">Agent недоступен — Session продолжает работать на нём, история подгрузится после переподключения.</p>}
             <Chat
               events={events[sessionId] ?? []}
+              paused={paused}
               onSend={(text) => request('session.send', { sessionId, text }, selected.agentId)}
               onAnswer={(requestId, allow, always) =>
                 request('session.answer', { sessionId, requestId, allow, always }, selected.agentId)

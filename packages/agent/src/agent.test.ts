@@ -144,3 +144,47 @@ test('Permission Mode: ask ждёт ответа пользователя, auto 
   c.close();
   a.server.close();
 });
+
+test('Пауза останавливает Engine посреди хода, переживает перезапуск, продолжение просит Engine доделать', async () => {
+  const log: string[] = [];
+  const slow: Engine = ({ resume, onItem, onEngineSessionId }) => {
+    log.push(`start resume=${resume}`);
+    onEngineSessionId('conv-1');
+    return {
+      send: (text) => {
+        log.push(`send ${text.slice(0, 15)}`);
+        setImmediate(() => onItem({ kind: 'text', text: 'работаю…' })); // ход не заканчивается
+      },
+      close: () => log.push('close'),
+    };
+  };
+  const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
+  const a1 = await startAgent(home, 0, { engine: slow });
+  const c1 = client(await connect((a1.server.address() as AddressInfo).port, a1.adminToken!));
+  const task: Task = await c1.call('task.create', { name: 'long' });
+  const sessionId = task.sessions[0].id;
+  await c1.call('session.subscribe', { sessionId, fromSeq: 0 });
+  await c1.call('session.send', { sessionId, text: 'делай' });
+  await c1.until(2);
+
+  assert.equal((await c1.call('task.pause', { taskId: task.id })).state, 'paused');
+  assert.deepEqual((await c1.until(3))[2].item, { kind: 'status', status: 'paused' });
+  assert.equal(await c1.call('session.send', { sessionId, text: 'ещё' }), undefined, 'на паузе сообщения не принимаются');
+  c1.close();
+  a1.server.close();
+
+  // После перезапуска Agent Task остаётся на паузе и сама не продолжается.
+  const a2 = await startAgent(home, 0, { engine: slow });
+  const c2 = client(await connect((a2.server.address() as AddressInfo).port, a1.adminToken!));
+  assert.equal((await c2.call('task.list'))[0].state, 'paused');
+  assert.deepEqual(log, ['start resume=undefined', 'send делай', 'close']);
+
+  await c2.call('session.subscribe', { sessionId, fromSeq: 3 });
+  assert.equal((await c2.call('task.resume', { taskId: task.id })).state, 'active');
+  const events = await c2.until(3);
+  assert.deepEqual(events[0].item, { kind: 'status', status: 'resumed' });
+  assert.equal(events[1].item.kind, 'user');
+  assert.deepEqual(log.slice(3), ['start resume=conv-1', 'send [HorizonStudio]']);
+  c2.close();
+  a2.server.close();
+});

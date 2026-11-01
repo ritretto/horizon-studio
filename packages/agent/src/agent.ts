@@ -90,11 +90,16 @@ function handle(req: Request, { member, tasks, ws, subscriptions, defaultPermiss
       return ok(tasks.create(p.name.trim(), member, p.permissionMode ?? defaultPermissionMode));
     case 'task.list':
       return ok(tasks.list(member));
+    case 'task.pause':
+    case 'task.resume': {
+      const task = req.method === 'task.pause' ? tasks.pause(p.taskId, member) : tasks.resume(p.taskId, member);
+      return task ? ok(task) : fail('unknown task');
+    }
     case 'session.send': {
       const session = tasks.session(p.sessionId, member);
       if (!session) return fail('unknown session');
       if (typeof p.text !== 'string' || !p.text.trim()) return fail('text is required');
-      session.send(p.text);
+      if (!session.send(p.text)) return fail('Task на паузе');
       return ok(null);
     }
     case 'session.answer': {

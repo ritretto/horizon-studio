@@ -5,9 +5,19 @@ import type { PermissionMode, SessionEvent, SessionItem, Task } from '@horizon/p
 import type { Engine, EngineRun } from './engine.ts';
 import type { Member } from './members.ts';
 
-interface StoredTask extends Task {
-  sessions: { id: string; engineSessionId?: string }[];
+interface StoredSession {
+  id: string;
+  engineSessionId?: string;
+  /** Пауза пришлась на середину хода — при продолжении Engine надо попросить доделать. */
+  pausedMidTurn?: boolean;
 }
+
+interface StoredTask extends Task {
+  sessions: StoredSession[];
+}
+
+const CONTINUE_PROMPT =
+  '[HorizonStudio] Task продолжена после паузы. Твой предыдущий ход был прерван — проверь состояние и продолжай с того места, где остановился.';
 
 type Listener = (e: SessionEvent) => void;
 
@@ -38,6 +48,7 @@ export class Tasks {
       ownerId: owner.id,
       engine: 'claude-code',
       permissionMode,
+      state: 'active',
       createdAt: new Date().toISOString(),
       sessions: [{ id: randomUUID() }],
     };
@@ -56,6 +67,33 @@ export class Tasks {
   session(sessionId: string, member: Member): Session | undefined {
     const task = [...this.tasks.values()].find((t) => t.sessions.some((s) => s.id === sessionId));
     if (!task || !canSee(member, task)) return;
+    return this.load(task, sessionId);
+  }
+
+  /** Пауза: все Session Task корректно останавливаются; id разговоров Engine сохранены. */
+  pause(taskId: string, member: Member): Task | undefined {
+    const task = this.tasks.get(taskId);
+    if (!task || !canSee(member, task)) return;
+    if (task.state !== 'paused') {
+      task.state = 'paused';
+      for (const s of task.sessions) this.load(task, s.id).pause();
+      this.save(task);
+    }
+    return publicTask(task);
+  }
+
+  resume(taskId: string, member: Member): Task | undefined {
+    const task = this.tasks.get(taskId);
+    if (!task || !canSee(member, task)) return;
+    if (task.state === 'paused') {
+      task.state = 'active';
+      this.save(task);
+      for (const s of task.sessions) this.load(task, s.id).resume();
+    }
+    return publicTask(task);
+  }
+
+  private load(task: StoredTask, sessionId: string): Session {
     let s = this.sessions.get(sessionId);
     if (!s) {
       const stored = task.sessions.find((x) => x.id === sessionId)!;
@@ -77,42 +115,55 @@ export class Session {
   private log: string;
   private cwd: string;
   private seq: number;
+  private midTurn: boolean;
   private listeners = new Set<Listener>();
   private run?: EngineRun;
+  /** Номер запуска Engine: события остановленного запуска отбрасываются. */
+  private generation = 0;
   private pending = new Map<string, (answer: { allow: boolean; always: boolean }) => void>();
-  private permissionMode: PermissionMode;
-  private stored: StoredTask['sessions'][number];
+  private task: StoredTask;
+  private stored: StoredSession;
   private engine: Engine;
   private save: () => void;
 
-  constructor(dir: string, task: Task, stored: StoredTask['sessions'][number], engine: Engine, save: () => void) {
+  constructor(dir: string, task: StoredTask, stored: StoredSession, engine: Engine, save: () => void) {
+    this.task = task;
     this.stored = stored;
-    this.permissionMode = task.permissionMode;
     this.engine = engine;
     this.save = save;
     this.cwd = join(dir, task.id, 'workspace');
     this.log = join(dir, task.id, 'sessions', `${stored.id}.jsonl`);
-    this.seq = this.history(0).length;
+    const history = this.history(0);
+    this.seq = history.length;
+    this.midTurn = history.filter((e) => e.item.kind !== 'status').at(-1)?.item.kind !== 'turn_end' && history.length > 0;
   }
 
-  send(text: string) {
+  /** Отправляет сообщение; false, если Task на паузе. */
+  send(text: string): boolean {
+    if (this.task.state === 'paused') return false;
     this.append({ kind: 'user', text });
-    this.run ??= this.engine({
-      cwd: this.cwd,
-      resume: this.stored.engineSessionId,
-      onItem: (item) => this.append(item),
-      onEngineSessionId: (id) => {
-        this.stored.engineSessionId = id;
-        this.save();
-      },
-      askPermission: (req) => {
-        if (this.permissionMode === 'auto') return Promise.resolve({ allow: true, always: false });
-        const requestId = randomUUID();
-        this.append({ kind: 'permission', requestId, ...req });
-        return new Promise((resolve) => this.pending.set(requestId, resolve));
-      },
-    });
-    this.run.send(text);
+    this.start().send(text);
+    return true;
+  }
+
+  pause() {
+    this.generation++;
+    this.run?.close();
+    this.run = undefined;
+    // Процесса Engine больше нет — висящие запросы разрешений снимаются.
+    for (const [requestId] of this.pending) this.append({ kind: 'permission_answer', requestId, allow: false, always: false });
+    this.pending.clear();
+    this.stored.pausedMidTurn = this.midTurn;
+    this.append({ kind: 'status', status: 'paused' });
+  }
+
+  resume() {
+    this.append({ kind: 'status', status: 'resumed' });
+    if (this.stored.pausedMidTurn) {
+      this.stored.pausedMidTurn = false;
+      this.save();
+      this.send(CONTINUE_PROMPT);
+    }
   }
 
   /** Ответ на запрос разрешения; false, если такого ожидающего запроса нет. */
@@ -132,6 +183,28 @@ export class Session {
     return () => this.listeners.delete(listener);
   }
 
+  private start(): EngineRun {
+    if (this.run) return this.run;
+    const generation = this.generation;
+    const live = () => generation === this.generation;
+    this.run = this.engine({
+      cwd: this.cwd,
+      resume: this.stored.engineSessionId,
+      onItem: (item) => live() && this.append(item),
+      onEngineSessionId: (id) => {
+        this.stored.engineSessionId = id;
+        this.save();
+      },
+      askPermission: (req) => {
+        if (this.task.permissionMode === 'auto') return Promise.resolve({ allow: true, always: false });
+        const requestId = randomUUID();
+        this.append({ kind: 'permission', requestId, ...req });
+        return new Promise((resolve) => this.pending.set(requestId, resolve));
+      },
+    });
+    return this.run;
+  }
+
   private history(fromSeq: number): SessionEvent[] {
     if (!existsSync(this.log)) return [];
     return readFileSync(this.log, 'utf8')
@@ -142,6 +215,7 @@ export class Session {
   }
 
   private append(item: SessionItem) {
+    if (item.kind !== 'status') this.midTurn = item.kind !== 'turn_end';
     const e: SessionEvent = { type: 'event', sessionId: this.stored.id, seq: ++this.seq, time: new Date().toISOString(), item };
     appendFileSync(this.log, JSON.stringify(e) + '\n');
     for (const l of this.listeners) l(e);

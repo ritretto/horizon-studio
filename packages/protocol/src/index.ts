@@ -35,6 +35,8 @@ export interface Task {
   ownerId: string;
   engine: EngineId;
   permissionMode: PermissionMode;
+  /** `paused` — все Session остановлены с возможностью продолжить; сами не продолжаются. */
+  state: 'active' | 'paused';
   createdAt: string;
   sessions: { id: string }[];
 }
@@ -48,6 +50,7 @@ export type SessionItem =
   | { kind: 'permission'; requestId: string; tool: string; input: unknown; reason?: string }
   | { kind: 'permission_answer'; requestId: string; allow: boolean; always: boolean }
   | { kind: 'turn_end'; error?: string }
+  | { kind: 'status'; status: 'paused' | 'resumed' }
   | { kind: 'error'; message: string };
 
 /**
