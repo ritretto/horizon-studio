@@ -5,11 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch src/main.ts",
-    "build": "esbuild src/main.ts --bundle --platform=node --format=esm --outfile=dist/agent.mjs",
+    "build": "esbuild src/main.ts --bundle --platform=node --format=esm --outfile=dist/agent.mjs --external:bufferutil --external:utf-8-validate --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\"",
     "start": "node dist/agent.mjs",
-    "typecheck": "tsc -p ."
+    "typecheck": "tsc -p .",
+    "test": "node --test src/*.test.ts"
   },
   "dependencies": {
-    "@horizon/protocol": "*"
+    "@horizon/protocol": "*",
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.2"
   }
 }
