@@ -26,11 +26,14 @@ export function startStudio(configFile: string, port: number): Promise<Server> {
   const clients = new Set<WebSocket>();
   const links = new Map<string, AgentLink>();
   const agentsEvent = (): AgentsEvent => ({ type: 'agents', agents: [...links.values()].map((l) => l.status) });
-  const broadcast = () => {
-    const msg = JSON.stringify(agentsEvent());
-    for (const c of clients) c.send(msg);
+  const send = (msg: unknown) => {
+    const data = JSON.stringify(msg);
+    for (const c of clients) c.send(data);
   };
-  const link = (c: Connection) => links.set(c.id, new AgentLink(c, broadcast));
+  const broadcast = () => send(agentsEvent());
+  // ponytail: события всех Session уходят всем браузерам, браузер фильтрует по sessionId и seq.
+  // Адресная рассылка — когда браузеров станет много (общая Studio).
+  const link = (c: Connection) => links.set(c.id, new AgentLink(c, broadcast, (e) => send({ ...e, agentId: c.id })));
   config.connections.forEach(link);
 
   async function handle(req: StudioRequest): Promise<Response> {

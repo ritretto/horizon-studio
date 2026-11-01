@@ -1,8 +1,10 @@
 import { createServer, type Server } from 'node:http';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, type WebSocket } from 'ws';
 import type { AgentHello, AgentInfo, Request, Response } from '@horizon/protocol';
 import pkg from '../package.json' with { type: 'json' };
+import { claudeCode, type Engine } from './engine.ts';
 import { Members, type Member } from './members.ts';
+import { Tasks } from './tasks.ts';
 
 const info: AgentInfo = { version: pkg.version };
 
@@ -12,8 +14,9 @@ export interface StartedAgent {
   adminToken?: string;
 }
 
-export function startAgent(home: string, port: number): Promise<StartedAgent> {
+export function startAgent(home: string, port: number, engine: Engine = claudeCode): Promise<StartedAgent> {
   const members = new Members(home);
+  const tasks = new Tasks(home, engine);
   const adminToken = members.isEmpty ? members.create('admin', 'admin') : undefined;
 
   const server = createServer((req, res) => {
@@ -33,6 +36,8 @@ export function startAgent(home: string, port: number): Promise<StartedAgent> {
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
+      const subscriptions = new Map<string, () => void>();
+      ws.on('close', () => subscriptions.forEach((unsubscribe) => unsubscribe()));
       ws.on('message', (data) => {
         let req: Request;
         try {
@@ -41,7 +46,7 @@ export function startAgent(home: string, port: number): Promise<StartedAgent> {
           ws.close(1003, 'invalid JSON');
           return;
         }
-        ws.send(JSON.stringify(handle(req, member)));
+        ws.send(JSON.stringify(handle(req, { member, tasks, ws, subscriptions })));
       });
     });
   });
@@ -49,16 +54,51 @@ export function startAgent(home: string, port: number): Promise<StartedAgent> {
   return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({ server, adminToken })));
 }
 
-function handle(req: Request, member: Member): Response {
+interface Context {
+  member: Member;
+  tasks: Tasks;
+  ws: WebSocket;
+  subscriptions: Map<string, () => void>;
+}
+
+function handle(req: Request, { member, tasks, ws, subscriptions }: Context): Response {
+  const ok = (result: unknown): Response => ({ type: 'response', id: req.id, result });
+  const fail = (message: string): Response => ({ type: 'response', id: req.id, error: { message } });
+  const p = (req.params ?? {}) as Record<string, any>;
+
   switch (req.method) {
     case 'agent.info': {
       const result: AgentHello = {
         ...info,
         member: { id: member.id, name: member.name, accessLevel: member.accessLevel },
       };
-      return { type: 'response', id: req.id, result };
+      return ok(result);
     }
+    case 'task.create':
+      if (typeof p.name !== 'string' || !p.name.trim()) return fail('name is required');
+      return ok(tasks.create(p.name.trim(), member));
+    case 'task.list':
+      return ok(tasks.list(member));
+    case 'session.send': {
+      const session = tasks.session(p.sessionId, member);
+      if (!session) return fail('unknown session');
+      if (typeof p.text !== 'string' || !p.text.trim()) return fail('text is required');
+      session.send(p.text);
+      return ok(null);
+    }
+    case 'session.subscribe': {
+      const session = tasks.session(p.sessionId, member);
+      if (!session) return fail('unknown session');
+      subscriptions.get(p.sessionId)?.();
+      // Ответ уходит после истории — это нормально: клиент различает их по type.
+      subscriptions.set(p.sessionId, session.subscribe(Number(p.fromSeq) || 0, (e) => ws.send(JSON.stringify(e))));
+      return ok(null);
+    }
+    case 'session.unsubscribe':
+      subscriptions.get(p.sessionId)?.();
+      subscriptions.delete(p.sessionId);
+      return ok(null);
     default:
-      return { type: 'response', id: req.id, error: { message: `unknown method: ${req.method}` } };
+      return fail(`unknown method: ${req.method}`);
   }
 }

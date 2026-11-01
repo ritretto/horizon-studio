@@ -24,6 +24,8 @@ npm run dev:server -w @horizon/studio  # Studio-сервер на 127.0.0.1:7300
 npm run dev -w @horizon/studio         # фронт Studio (Vite), /ws проксируется на Studio-сервер
 ```
 
+Agent запускает Claude Code через Claude Agent SDK с учётными данными, уже настроенными на машине (`claude` login или `ANTHROPIC_API_KEY`). Task хранятся в `<Agent Home>/tasks/<id>/`: `workspace/` — Task Directory, `sessions/*.jsonl` — журнал событий Session.
+
 При первом старте Agent создаёт Member `admin` и один раз печатает его Access Token. Порт задаётся в `<Agent Home>/config.json` (`{"port": 7400}` по умолчанию). Подключение — WebSocket с заголовком `Authorization: Bearer <token>`.
 
 ## Документация

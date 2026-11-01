@@ -1,5 +1,5 @@
 import WebSocket from 'ws';
-import type { AgentHello, AgentStatus, Response } from '@horizon/protocol';
+import type { AgentHello, AgentStatus, Response, SessionEvent } from '@horizon/protocol';
 
 export interface Connection {
   id: string;
@@ -20,10 +20,12 @@ export class AgentLink {
   private closed = false;
   readonly connection: Connection;
   private onChange: () => void;
+  private onEvent: (e: SessionEvent) => void;
 
-  constructor(connection: Connection, onChange: () => void) {
+  constructor(connection: Connection, onChange: () => void, onEvent: (e: SessionEvent) => void) {
     this.connection = connection;
     this.onChange = onChange;
+    this.onEvent = onEvent;
     this.status = { id: connection.id, name: connection.name, port: connection.port, state: 'connecting' };
     this.open();
   }
@@ -59,9 +61,10 @@ export class AgentLink {
       if ('result' in res) this.set('online', res.result as AgentHello);
     });
     ws.on('message', (data) => {
-      const res = JSON.parse(String(data)) as Response;
-      this.pending.get(res.id)?.(res);
-      this.pending.delete(res.id);
+      const msg = JSON.parse(String(data)) as Response | SessionEvent;
+      if (msg.type === 'event') return this.onEvent(msg);
+      this.pending.get(msg.id)?.(msg);
+      this.pending.delete(msg.id);
     });
     ws.on('error', () => {}); // за ним всегда следует close
     ws.on('close', () => {

@@ -22,6 +22,40 @@ export type Response =
   | { type: 'response'; id: number; result: unknown }
   | { type: 'response'; id: number; error: { message: string } };
 
+// --- Task и Session ---
+
+export type EngineId = 'claude-code';
+
+export interface Task {
+  id: string;
+  name: string;
+  ownerId: string;
+  engine: EngineId;
+  createdAt: string;
+  sessions: { id: string }[];
+}
+
+/** Элемент истории Session — не зависит от Engine. */
+export type SessionItem =
+  | { kind: 'user'; text: string }
+  | { kind: 'text'; text: string }
+  | { kind: 'tool'; id: string; name: string; input: unknown }
+  | { kind: 'tool_result'; id: string; output: string; isError: boolean }
+  | { kind: 'turn_end'; error?: string }
+  | { kind: 'error'; message: string };
+
+/**
+ * Событие Session. `seq` — сквозной номер в пределах Session.
+ * Подписка: `session.subscribe {sessionId, fromSeq}` — досылает события с seq > fromSeq, затем новые.
+ */
+export interface SessionEvent {
+  type: 'event';
+  sessionId: string;
+  seq: number;
+  time: string;
+  item: SessionItem;
+}
+
 // --- Браузер ↔ Studio-сервер ---
 // Запрос с `agentId` Studio-сервер пересылает этому Agent; без `agentId` — обрабатывает сам.
 
@@ -48,4 +82,9 @@ export interface AgentStatus {
 export interface AgentsEvent {
   type: 'agents';
   agents: AgentStatus[];
+}
+
+/** SessionEvent, пересланный Studio-сервером браузеру. */
+export interface StudioSessionEvent extends SessionEvent {
+  agentId: string;
 }
