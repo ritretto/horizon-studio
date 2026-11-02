@@ -6,7 +6,7 @@
   "exports": "./src/agent.ts",
   "scripts": {
     "dev": "node --watch src/main.ts",
-    "build": "esbuild src/main.ts --bundle --platform=node --format=esm --outfile=dist/agent.mjs --external:@anthropic-ai/claude-agent-sdk --external:bufferutil --external:utf-8-validate --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\"",
+    "build": "esbuild src/main.ts --bundle --platform=node --format=esm --outfile=dist/agent.mjs --external:@anthropic-ai/claude-agent-sdk --external:bufferutil --external:utf-8-validate --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" && node -e \"const p = require('./package.json'); require('fs').writeFileSync('dist/package.json', JSON.stringify({ name: 'horizon-agent', version: p.version, private: true, type: 'module', dependencies: { '@anthropic-ai/claude-agent-sdk': require('../../node_modules/@anthropic-ai/claude-agent-sdk/package.json').version } }, null, 2))\"",
     "start": "node dist/agent.mjs",
     "typecheck": "tsc -p .",
     "test": "node --test src/*.test.ts"

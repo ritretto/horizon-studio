@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "esbuild src/main.ts --bundle --platform=node --format=esm --outfile=dist/launcher.mjs",
-    "typecheck": "tsc -p ."
+    "typecheck": "tsc -p .",
+    "test": "node --test src/*.test.ts"
   }
 }

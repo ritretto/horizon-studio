@@ -24,6 +24,16 @@ npm run dev:server -w @horizon/studio  # Studio-сервер на 127.0.0.1:7300
 npm run dev -w @horizon/studio         # фронт Studio (Vite), /ws проксируется на Studio-сервер
 ```
 
+### Установка Agent как сервиса
+
+```sh
+npm run build
+node packages/launcher/dist/launcher.mjs install [--home <Agent Home>] [--agent <сборка Agent, по умолчанию packages/agent/dist>]
+node packages/launcher/dist/launcher.mjs uninstall   # Agent Home остаётся
+```
+
+`install` кладёт сборку Agent в `<Agent Home>/versions/<версия>` (с `npm install` зависимостей), копирует Launcher в `<Agent Home>/launcher/` и регистрирует пользовательский сервис: на macOS — LaunchAgent `dev.horizon.agent`, на Linux — `systemd --user` `horizon-agent` + `loginctl enable-linger`. Launcher запускает версию из `<Agent Home>/current` и перезапускает Agent при падении. Вывод Agent пишется в `<Agent Home>/agent.log`, и при первой установке `install` печатает оттуда Access Token admin. Сервис получает PATH из окружения, в котором выполнен `install`; другие переменные окружения (например, `ANTHROPIC_API_KEY`) в сервис не передаются.
+
 Agent запускает Claude Code через Claude Agent SDK с учётными данными, уже настроенными на машине (`claude` login или `ANTHROPIC_API_KEY`). Task хранятся в `<Agent Home>/tasks/<id>/`: `workspace/` — Task Directory, `sessions/*.jsonl` — журнал событий Session.
 
 При первом старте Agent создаёт Member `admin` и один раз печатает его Access Token. Остальных Member admin создаёт в Studio (кнопка «Member» у Agent): `user` видит только свои Task, `admin` — все; там же выпускаются и отзываются Access Token. Отзыв сразу закрывает открытые по токену соединения; последний токен admin отозвать нельзя. Конфиг — `<Agent Home>/config.json`: `port` (по умолчанию 7400), `defaultPermissionMode` — Permission Mode новых Task, `ask` (по умолчанию) или `auto`; `completedRetentionDays` — через сколько дней завершённая Task удаляется безвозвратно (по умолчанию 30). Подключение — WebSocket с заголовком `Authorization: Bearer <token>`.
