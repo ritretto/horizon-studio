@@ -1,5 +1,5 @@
 import WebSocket from 'ws';
-import type { AgentHello, AgentStatus, ConnectionInput, Response, SessionEvent } from '@horizon/protocol';
+import type { AgentHello, AgentStatus, ConnectionInput, Response, SessionEvent, TasksEvent } from '@horizon/protocol';
 import { openTunnel, type Tunnel } from './tunnel.ts';
 
 export interface Connection extends ConnectionInput {
@@ -21,11 +21,11 @@ export class AgentLink {
   private closed = false;
   readonly connection: Connection;
   private onChange: () => void;
-  private onEvent: (e: SessionEvent) => void;
+  private onEvent: (e: SessionEvent | TasksEvent) => void;
   private knownHosts: string;
   private tunnel?: Tunnel;
 
-  constructor(connection: Connection, knownHosts: string, onChange: () => void, onEvent: (e: SessionEvent) => void) {
+  constructor(connection: Connection, knownHosts: string, onChange: () => void, onEvent: (e: SessionEvent | TasksEvent) => void) {
     this.connection = connection;
     this.knownHosts = knownHosts;
     this.onChange = onChange;
@@ -86,8 +86,8 @@ export class AgentLink {
       this.refresh = setInterval(hello, REFRESH_MS);
     });
     ws.on('message', (data) => {
-      const msg = JSON.parse(String(data)) as Response | SessionEvent;
-      if (msg.type === 'event') return this.onEvent(msg);
+      const msg = JSON.parse(String(data)) as Response | SessionEvent | TasksEvent;
+      if (msg.type !== 'response') return this.onEvent(msg);
       this.pending.get(msg.id)?.(msg);
       this.pending.delete(msg.id);
     });

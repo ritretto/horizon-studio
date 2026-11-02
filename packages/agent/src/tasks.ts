@@ -34,6 +34,8 @@ export class Tasks {
   private sessions = new Map<string, Session>();
   private engine: Engine;
   private retentionMs: number;
+  /** Изменился список Task или состояние одной из них. */
+  onChange = () => {};
 
   constructor(home: string, engine: Engine, retentionDays: number) {
     this.dir = join(home, 'tasks');
@@ -153,6 +155,7 @@ export class Tasks {
     }
     this.tasks.delete(task.id);
     rmSync(join(this.dir, task.id), { recursive: true, force: true });
+    this.onChange();
   }
 
   private public(t: StoredTask): Task {
@@ -172,6 +175,7 @@ export class Tasks {
 
   private save(task: StoredTask) {
     writeFileSync(join(this.dir, task.id, 'task.json'), JSON.stringify(task, null, 2));
+    this.onChange();
   }
 }
 

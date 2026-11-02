@@ -47,6 +47,9 @@ main {
 .agent-head .link + .link {
   margin-left: 0;
 }
+.agent-head strong {
+  white-space: nowrap;
+}
 .agent-head .muted {
   white-space: nowrap;
   overflow: hidden;
@@ -258,4 +261,27 @@ button.danger {
 .issued code {
   user-select: all;
   font-size: 1.05em;
+}
+
+.task-agent {
+  margin-left: 0.5rem;
+  font-size: 0.8em;
+  opacity: 0.6;
+}
+.new-task {
+  flex-direction: column;
+  margin-bottom: 1rem;
+}
+.new-task div {
+  display: flex;
+  gap: 0.4rem;
+}
+.new-task input {
+  flex: 1;
+}
+aside h3 {
+  margin: 1rem 0 0.5rem;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  opacity: 0.6;
 }

@@ -129,6 +129,17 @@ export interface AgentsEvent {
   agents: AgentStatus[];
 }
 
+/** Agent присылает каждому соединению видимый ему список Task при любом изменении. */
+export interface TasksEvent {
+  type: 'tasks';
+  tasks: Task[];
+}
+
+/** TasksEvent, пересланный Studio-сервером браузеру. */
+export interface StudioTasksEvent extends TasksEvent {
+  agentId: string;
+}
+
 /** SessionEvent, пересланный Studio-сервером браузеру. */
 export interface StudioSessionEvent extends SessionEvent {
   agentId: string;

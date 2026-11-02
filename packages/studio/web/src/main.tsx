@@ -29,8 +29,7 @@ const engineLabel: Record<EngineStatus, string> = {
 const completedLast = (a: Task, b: Task) => Number(a.state === 'completed') - Number(b.state === 'completed');
 
 function App() {
-  const { agents, connected, events, request } = useStudio();
-  const [tasks, setTasks] = useState<Record<string, Task[]>>({});
+  const { agents, connected, tasks, setTasks, events, request } = useStudio();
   const [selected, setSelected] = useState<{ agentId: string; taskId: string }>();
   const task = selected && tasks[selected.agentId]?.find((t) => t.id === selected.taskId);
   /** Agent, чьи Member открыты в основной панели вместо Task. */
@@ -43,9 +42,15 @@ function App() {
     const res = await request('task.list', undefined, agentId);
     if ('result' in res) setTasks((t) => ({ ...t, [agentId]: res.result as Task[] }));
   };
+  // Дальше Agent сам присылает список при изменениях.
   useEffect(() => {
     online.split(',').filter(Boolean).forEach(loadTasks);
   }, [online]);
+  const onlineAgents = agents.filter((a) => a.state === 'online');
+  const allTasks = onlineAgents
+    .flatMap((agent) => (tasks[agent.id] ?? []).map((task) => ({ agent, task })))
+    .sort((a, b) => completedLast(a.task, b.task) || a.task.createdAt.localeCompare(b.task.createdAt));
+  const readyAgents = onlineAgents.filter((a) => a.hello?.engines.some((e) => e.status === 'ready'));
 
   // Подписка на Session выбранной Task; после переподключения Agent — заново, с последнего seq.
   const sessionId = task?.sessions[0].id;
@@ -57,14 +62,15 @@ function App() {
     return () => void request('session.unsubscribe', { sessionId }, selected.agentId);
   }, [sessionId, agentOnline]);
 
-  async function createTask(agentId: string, e: FormEvent<HTMLFormElement>) {
+  async function createTask(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const form = e.currentTarget;
     const data = new FormData(form);
+    const agentId = String(data.get('agentId') ?? readyAgents[0].id);
     const res = await request('task.create', { name: data.get('name'), permissionMode: data.get('permissionMode') || undefined }, agentId);
     if ('error' in res) return setError(res.error.message);
     form.reset();
-    await loadTasks(agentId);
+    await loadTasks(agentId); // чтобы Task была в списке сразу, не дожидаясь события
     setSelected({ agentId, taskId: (res.result as Task).id });
     setMembersOf(undefined);
   }
@@ -80,7 +86,6 @@ function App() {
     const res = await request(`task.${method}`, { taskId: task.id }, selected.agentId);
     if ('error' in res) setError(res.error.message);
     else if (method === 'delete') setSelected(undefined);
-    await loadTasks(selected.agentId);
   }
 
   async function addConnection(e: FormEvent<HTMLFormElement>) {
@@ -108,12 +113,53 @@ function App() {
         <h1>HorizonStudio</h1>
         {!connected && <p className="warn">Нет связи со Studio-сервером, переподключаемся…</p>}
         {agents.length === 0 && <p className="muted">Добавьте Connection к Agent ниже.</p>}
+
+        {/* Task со всех online-Agent; Task недоступных Agent не показываются. */}
+        <ul className="tasks">
+          {allTasks.map(({ agent, task: t }) => (
+            <li key={agent.id + t.id}>
+              <button
+                className={`${selected?.agentId === agent.id && selected.taskId === t.id ? 'active' : ''} ${t.state}`}
+                onClick={() => (setSelected({ agentId: agent.id, taskId: t.id }), setMembersOf(undefined))}
+              >
+                {t.state === 'paused' && <span title="На паузе">⏸ </span>}
+                {t.state === 'completed' && <span title="Завершена">✓ </span>}
+                {t.name}
+                {agents.length > 1 && <span className="task-agent">{agent.name}</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+        {readyAgents.length > 0 && (
+          <form className="new-task" onSubmit={createTask}>
+            <div>
+              <input name="name" placeholder="Новая Task" required />
+              <button>+</button>
+            </div>
+            {readyAgents.length > 1 && (
+              <select name="agentId" aria-label="Agent">
+                {readyAgents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    на {a.name}
+                  </option>
+                ))}
+              </select>
+            )}
+            <select name="permissionMode" aria-label="Permission Mode" defaultValue="">
+              <option value="">Разрешения: по умолчанию Agent</option>
+              <option value="ask">Спрашивать разрешения</option>
+              <option value="auto">Разрешать всё без вопросов</option>
+            </select>
+          </form>
+        )}
+
+        <h3>Agent</h3>
         {agents.map((a) => (
           <div key={a.id} className="agent">
             <div className="agent-head">
               <span className={`dot ${a.state}`} />
               <strong>{a.name}</strong>
-              <span className="muted">
+              <span className="muted" title={a.hello ? `v${a.hello.version} · ${a.hello.member.name}` : undefined}>
                 {a.hello ? `v${a.hello.version} · ${a.hello.member.name}` : stateLabel[a.state]}
               </span>
               {a.hello?.member.accessLevel === 'admin' && (
@@ -132,40 +178,12 @@ function App() {
               </p>
             )}
             {a.error && <p className="warn">{a.error}</p>}
-            {a.state === 'online' && a.hello && (
-              <>
-                <ul className="tasks">
-                  {[...(tasks[a.id] ?? [])].sort(completedLast).map((t) => (
-                    <li key={t.id}>
-                      <button
-                        className={`${selected?.taskId === t.id ? 'active' : ''} ${t.state}`}
-                        onClick={() => (setSelected({ agentId: a.id, taskId: t.id }), setMembersOf(undefined))}
-                      >
-                        {t.state === 'paused' && <span title="На паузе">⏸ </span>}
-                        {t.state === 'completed' && <span title="Завершена">✓ </span>}
-                        {t.name}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-                {a.hello.engines.map((e) => (
-                  <p key={e.id} className={e.status === 'ready' ? 'muted' : 'warn'}>
-                    Claude Code: {engineLabel[e.status]}
-                  </p>
-                ))}
-                {a.hello.engines.some((e) => e.status === 'ready') && (
-                  <form onSubmit={(e) => createTask(a.id, e)}>
-                    <input name="name" placeholder="Новая Task" required />
-                    <button>+</button>
-                    <select name="permissionMode" aria-label="Permission Mode" defaultValue="">
-                      <option value="">Разрешения: по умолчанию Agent</option>
-                      <option value="ask">Спрашивать разрешения</option>
-                      <option value="auto">Разрешать всё без вопросов</option>
-                    </select>
-                  </form>
-                )}
-              </>
-            )}
+            {a.state === 'online' &&
+              a.hello?.engines.map((e) => (
+                <p key={e.id} className={e.status === 'ready' ? 'muted' : 'warn'}>
+                  Claude Code: {engineLabel[e.status]}
+                </p>
+              ))}
           </div>
         ))}
 

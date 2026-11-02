@@ -283,14 +283,29 @@ test('Member: admin создаёт user и токены, user видит тол�
   const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
   const a = await startAgent(home, 0, { engine: echo });
   const port = (a.server.address() as AddressInfo).port;
-  const admin = client(await connect(port, a.adminToken!));
+  const adminWs = await connect(port, a.adminToken!);
+  const admin = client(adminWs);
   const { id: bobId, token: bobToken } = await admin.call('member.create', { name: 'bob', accessLevel: 'user' });
   const bobWs = await connect(port, bobToken);
   const bob = client(bobWs);
   assert.equal(await bob.call('member.list'), undefined, 'user не управляет Member');
 
+  // Каждому соединению Agent сам присылает его список Task при изменениях.
+  const lastTasks = (ws: WebSocket) => {
+    let last: Task[] = [];
+    ws.on('message', (d) => {
+      const m = JSON.parse(String(d));
+      if (m.type === 'tasks') last = m.tasks;
+    });
+    return () => last.map((t) => t.name).sort();
+  };
+  const adminSees = lastTasks(adminWs);
+  const bobSees = lastTasks(bobWs);
   await admin.call('task.create', { name: 'admin task' });
   await bob.call('task.create', { name: 'bob task' });
+  while (adminSees().length < 2 || bobSees().length < 1) await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(adminSees(), ['admin task', 'bob task']);
+  assert.deepEqual(bobSees(), ['bob task']);
   assert.deepEqual((await bob.call('task.list')).map((t: Task) => t.name), ['bob task']);
   assert.deepEqual((await admin.call('task.list')).map((t: Task) => t.name).sort(), ['admin task', 'bob task']);
 

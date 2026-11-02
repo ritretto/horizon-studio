@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { AccessLevel, AgentHello, AgentInfo, PermissionMode, Request, Response } from '@horizon/protocol';
+import type { AccessLevel, AgentHello, TasksEvent, AgentInfo, PermissionMode, Request, Response } from '@horizon/protocol';
 import pkg from '../package.json' with { type: 'json' };
 import { claudeCode, type Engine } from './engine.ts';
 import { Members, type Member } from './members.ts';
@@ -33,8 +33,18 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
   setInterval(() => tasks.purge(), 60 * 60 * 1000).unref();
   const defaultPermissionMode = opts.defaultPermissionMode ?? 'ask';
   const adminToken = members.isEmpty ? members.create('admin', 'admin').token : undefined;
-  /** Открытые соединения и токены, по которым они открыты: отзыв токена их закрывает. */
-  const sockets = new Map<WebSocket, string>();
+  /** Открытые соединения: кто и по какому токену. Отзыв токена их закрывает. */
+  const sockets = new Map<WebSocket, { member: Member; tokenId: string }>();
+  // Каждому соединению — его список Task; несколько изменений за один тик — одно событие.
+  let tasksChanged = false;
+  tasks.onChange = () => {
+    if (tasksChanged) return;
+    tasksChanged = true;
+    setImmediate(() => {
+      tasksChanged = false;
+      for (const [ws, { member }] of sockets) ws.send(JSON.stringify({ type: 'tasks', tasks: tasks.list(member) } satisfies TasksEvent));
+    });
+  };
 
   const server = createServer((req, res) => {
     if (req.url === '/health') {
@@ -54,7 +64,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
     }
     const { member, tokenId } = auth;
     wss.handleUpgrade(req, socket, head, (ws) => {
-      sockets.set(ws, tokenId);
+      sockets.set(ws, auth);
       const subscriptions = new Map<string, () => void>();
       ws.on('close', () => {
         sockets.delete(ws);
@@ -86,7 +96,7 @@ interface Context {
   member: Member;
   tokenId: string;
   members: Members;
-  sockets: Map<WebSocket, string>;
+  sockets: Map<WebSocket, { member: Member; tokenId: string }>;
   engine: Engine;
   tasks: Tasks;
   ws: WebSocket;
@@ -118,7 +128,7 @@ async function handle(req: Request, { member, tokenId, members, sockets, engine,
       const error = members.revoke(p.memberId, p.tokenId);
       if (error) return fail(error);
       // После ответа: отзыв собственного токена закрывает и это соединение.
-      setImmediate(() => sockets.forEach((t, s) => t === p.tokenId && s.close(1008, 'token revoked')));
+      setImmediate(() => sockets.forEach((a, s) => a.tokenId === p.tokenId && s.close(1008, 'token revoked')));
       return ok(null);
     }
     case 'agent.info': {
