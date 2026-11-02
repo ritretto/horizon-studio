@@ -13,7 +13,7 @@ const tmp = () => mkdtempSync(join(tmpdir(), 'horizon-studio-'));
 const portOf = (s: { address(): unknown }) => (s.address() as AddressInfo).port;
 
 test('Studio подключается к Agent по Connection, показывает статус и ретранслирует запросы', async () => {
-  const agent = await startAgent(tmp(), 0);
+  const agent = await startAgent(tmp(), 0, { engine: () => ({ send() {}, close() {} }) });
   const configFile = join(tmp(), 'config.json');
   const studio = await startStudio(configFile, 0);
 
@@ -40,6 +40,7 @@ test('Studio подключается к Agent по Connection, показыва
   const online = await waitFor<AgentsEvent>(agentWith('online'));
   assert.equal(online.agents[0].hello?.member.accessLevel, 'admin');
   assert.equal(online.agents[0].hello?.version, '0.1.0');
+  assert.equal(online.agents[0].hello?.engines[0].status, 'ready');
   assert.ok(readFileSync(configFile, 'utf8').includes(agent.adminToken!), 'Connection сохранена в конфиг');
 
   send(2, 'agent.info', undefined, result.id);

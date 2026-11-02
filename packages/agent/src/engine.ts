@@ -1,5 +1,5 @@
-import { query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { SessionItem } from '@horizon/protocol';
+import { query, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { EngineStatus, SessionItem } from '@horizon/protocol';
 
 /** Запущенный Engine для одной Session. */
 export interface EngineRun {
@@ -17,7 +17,11 @@ export interface EngineOptions {
   askPermission(req: { tool: string; input: unknown; reason?: string }): Promise<{ allow: boolean; always: boolean }>;
 }
 
-export type Engine = (opts: EngineOptions) => EngineRun;
+export interface Engine {
+  (opts: EngineOptions): EngineRun;
+  /** Готов ли Engine к работе на этой машине; без проверки считается готовым. */
+  status?(): Promise<EngineStatus>;
+}
 
 /** Claude Code через Claude Agent SDK, в режиме потокового ввода: один процесс на Session. */
 export const claudeCode: Engine = (opts) => {
@@ -56,6 +60,22 @@ export const claudeCode: Engine = (opts) => {
       q.close();
     },
   };
+};
+
+/** Claude Code стартует без промпта и сообщает, под каким аккаунтом работает. */
+claudeCode.status = async () => {
+  let q: Query | undefined;
+  try {
+    q = query({ prompt: new Inbox<SDKUserMessage>() }); // без бинарника Claude Code бросает сразу
+    const a = await q.accountInfo();
+    // Сторонние провайдеры (Bedrock, Vertex…) авторизуются вне Claude Code — их считаем готовыми.
+    const firstParty = (a.apiProvider ?? 'firstParty') === 'firstParty';
+    return firstParty && a.tokenSource === 'none' && !a.apiKeySource ? 'no credentials' : 'ready';
+  } catch {
+    return 'not installed';
+  } finally {
+    q?.close();
+  }
 };
 
 function toItems(msg: SDKMessage, opts: EngineOptions) {

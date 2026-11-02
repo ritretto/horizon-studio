@@ -19,7 +19,8 @@ function connect(port: number, token: string) {
 
 test('первый старт выдаёт admin-токен, по нему работает agent.info, чужой токен отклоняется', async () => {
   const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
-  const { server, adminToken } = await startAgent(home, 0);
+  const noCredentials: Engine = Object.assign(() => ({ send() {}, close() {} }), { status: async () => 'no credentials' as const });
+  const { server, adminToken } = await startAgent(home, 0, { engine: noCredentials });
   const { port } = server.address() as AddressInfo;
   assert.ok(adminToken);
   assert.ok(!readFileSync(join(home, 'members.json'), 'utf8').includes(adminToken), 'токен не хранится открыто');
@@ -30,13 +31,14 @@ test('первый старт выдаёт admin-токен, по нему ра�
   const res = JSON.parse(String(data));
   assert.equal(res.id, 1);
   assert.equal(res.result.member.accessLevel, 'admin');
+  assert.deepEqual(res.result.engines, [{ id: 'claude-code', status: 'no credentials' }]);
   ws.close();
 
   await assert.rejects(connect(port, 'wrong'), /401/);
 
   // Повторный старт на том же Agent Home не создаёт нового admin.
   server.close();
-  const again = await startAgent(home, 0);
+  const again = await startAgent(home, 0, { engine: noCredentials });
   assert.equal(again.adminToken, undefined);
   again.server.close();
 });

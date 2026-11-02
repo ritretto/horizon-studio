@@ -9,6 +9,8 @@ export interface AgentInfo {
 /** Отдаётся методом `agent.info`: Agent и Member, от имени которого открыто соединение. */
 export interface AgentHello extends AgentInfo {
   member: { id: string; name: string; accessLevel: AccessLevel };
+  /** Engine этого Agent и их готовность на его машине. */
+  engines: { id: EngineId; status: EngineStatus }[];
 }
 
 export interface Request {
@@ -25,6 +27,7 @@ export type Response =
 // --- Task и Session ---
 
 export type EngineId = 'claude-code';
+export type EngineStatus = 'ready' | 'not installed' | 'no credentials';
 
 /** `ask` — каждый запрос разрешения ждёт ответа пользователя (Session в Waiting); `auto` — всё разрешается. */
 export type PermissionMode = 'ask' | 'auto';

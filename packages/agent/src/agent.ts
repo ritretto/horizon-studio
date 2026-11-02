@@ -26,7 +26,8 @@ export interface AgentOptions {
 
 export function startAgent(home: string, port: number, opts: AgentOptions = {}): Promise<StartedAgent> {
   const members = new Members(home);
-  const tasks = new Tasks(home, opts.engine ?? claudeCode, opts.completedRetentionDays ?? 30);
+  const engine = opts.engine ?? claudeCode;
+  const tasks = new Tasks(home, engine, opts.completedRetentionDays ?? 30);
   tasks.purge();
   tasks.recover();
   setInterval(() => tasks.purge(), 60 * 60 * 1000).unref();
@@ -60,7 +61,9 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
           ws.close(1003, 'invalid JSON');
           return;
         }
-        ws.send(JSON.stringify(handle(req, { member, tasks, ws, subscriptions, defaultPermissionMode })));
+        handle(req, { member, engine, tasks, ws, subscriptions, defaultPermissionMode })
+          .catch((e): Response => ({ type: 'response', id: req.id, error: { message: e instanceof Error ? e.message : String(e) } }))
+          .then((res) => ws.send(JSON.stringify(res)));
       });
     });
   });
@@ -74,6 +77,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
 
 interface Context {
   member: Member;
+  engine: Engine;
   tasks: Tasks;
   ws: WebSocket;
   subscriptions: Map<string, () => void>;
@@ -82,7 +86,7 @@ interface Context {
 
 const permissionModes: PermissionMode[] = ['ask', 'auto'];
 
-function handle(req: Request, { member, tasks, ws, subscriptions, defaultPermissionMode }: Context): Response {
+async function handle(req: Request, { member, engine, tasks, ws, subscriptions, defaultPermissionMode }: Context): Promise<Response> {
   const ok = (result: unknown): Response => ({ type: 'response', id: req.id, result });
   const fail = (message: string): Response => ({ type: 'response', id: req.id, error: { message } });
   const p = (req.params ?? {}) as Record<string, any>;
@@ -92,6 +96,7 @@ function handle(req: Request, { member, tasks, ws, subscriptions, defaultPermiss
       const result: AgentHello = {
         ...info,
         member: { id: member.id, name: member.name, accessLevel: member.accessLevel },
+        engines: [{ id: 'claude-code', status: (await engine.status?.()) ?? 'ready' }],
       };
       return ok(result);
     }

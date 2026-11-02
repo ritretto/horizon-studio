@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { AgentStatus, PermissionMode, Task, TaskState } from '@horizon/protocol';
+import type { AgentStatus, EngineStatus, PermissionMode, Task, TaskState } from '@horizon/protocol';
 import { useStudio } from './studio.ts';
 import { Chat } from './chat.tsx';
 import './style.css';
@@ -17,6 +17,12 @@ const stateLabel: Record<AgentStatus['state'], string> = {
   online: 'online',
   offline: 'offline',
   unauthorized: 'неверный токен',
+};
+
+const engineLabel: Record<EngineStatus, string> = {
+  ready: 'готов',
+  'not installed': 'не установлен',
+  'no credentials': 'нет учётных данных — войдите в Claude Code на машине Agent',
 };
 
 const completedLast = (a: Task, b: Task) => Number(a.state === 'completed') - Number(b.state === 'completed');
@@ -106,7 +112,7 @@ function App() {
                 ×
               </button>
             </div>
-            {a.state === 'online' && (
+            {a.state === 'online' && a.hello && (
               <>
                 <ul className="tasks">
                   {[...(tasks[a.id] ?? [])].sort(completedLast).map((t) => (
@@ -122,15 +128,22 @@ function App() {
                     </li>
                   ))}
                 </ul>
-                <form onSubmit={(e) => createTask(a.id, e)}>
-                  <input name="name" placeholder="Новая Task" required />
-                  <button>+</button>
-                  <select name="permissionMode" aria-label="Permission Mode" defaultValue="">
-                    <option value="">Разрешения: по умолчанию Agent</option>
-                    <option value="ask">Спрашивать разрешения</option>
-                    <option value="auto">Разрешать всё без вопросов</option>
-                  </select>
-                </form>
+                {a.hello.engines.map((e) => (
+                  <p key={e.id} className={e.status === 'ready' ? 'muted' : 'warn'}>
+                    Claude Code: {engineLabel[e.status]}
+                  </p>
+                ))}
+                {a.hello.engines.some((e) => e.status === 'ready') && (
+                  <form onSubmit={(e) => createTask(a.id, e)}>
+                    <input name="name" placeholder="Новая Task" required />
+                    <button>+</button>
+                    <select name="permissionMode" aria-label="Permission Mode" defaultValue="">
+                      <option value="">Разрешения: по умолчанию Agent</option>
+                      <option value="ask">Спрашивать разрешения</option>
+                      <option value="auto">Разрешать всё без вопросов</option>
+                    </select>
+                  </form>
+                )}
               </>
             )}
           </div>

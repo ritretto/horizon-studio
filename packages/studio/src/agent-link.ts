@@ -9,6 +9,8 @@ export interface Connection {
 }
 
 const RETRY_MS = 3000;
+/** Как часто перепроверять статус Agent, например готовность Engine после входа в Claude Code. */
+const REFRESH_MS = 60_000;
 
 /** Соединение Studio-сервера с одним Agent: держит его, переподключается и ретранслирует запросы. */
 export class AgentLink {
@@ -17,6 +19,7 @@ export class AgentLink {
   private pending = new Map<number, (res: Response) => void>();
   private nextId = 1;
   private retry?: NodeJS.Timeout;
+  private refresh?: NodeJS.Timeout;
   private closed = false;
   readonly connection: Connection;
   private onChange: () => void;
@@ -42,6 +45,7 @@ export class AgentLink {
   close() {
     this.closed = true;
     clearTimeout(this.retry);
+    clearInterval(this.refresh);
     this.ws?.close();
   }
 
@@ -56,9 +60,13 @@ export class AgentLink {
       unauthorized = res.statusCode === 401;
       ws.terminate();
     });
-    ws.on('open', async () => {
+    const hello = async () => {
       const res = await this.request('agent.info');
       if ('result' in res) this.set('online', res.result as AgentHello);
+    };
+    ws.on('open', () => {
+      hello();
+      this.refresh = setInterval(hello, REFRESH_MS);
     });
     ws.on('message', (data) => {
       const msg = JSON.parse(String(data)) as Response | SessionEvent;
@@ -70,6 +78,7 @@ export class AgentLink {
     ws.on('close', () => {
       for (const [id, resolve] of this.pending) resolve({ type: 'response', id, error: { message: 'agent disconnected' } });
       this.pending.clear();
+      clearInterval(this.refresh);
       if (this.closed) return;
       this.set(unauthorized ? 'unauthorized' : 'offline');
       this.retry = setTimeout(() => this.open(), RETRY_MS);
@@ -77,7 +86,7 @@ export class AgentLink {
   }
 
   private set(state: AgentStatus['state'], hello?: AgentHello) {
-    if (this.status.state === state && this.status.hello === hello) return;
+    if (this.status.state === state && JSON.stringify(this.status.hello) === JSON.stringify(hello)) return;
     this.status = { ...this.status, state, hello };
     this.onChange();
   }
