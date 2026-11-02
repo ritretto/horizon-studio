@@ -84,10 +84,22 @@ export interface StudioRequest extends Request {
   agentId?: string;
 }
 
+/** Удалённый Agent: Studio ходит к нему через SSH-туннель. */
+export interface SshTarget {
+  host: string;
+  user?: string;
+  /** Порт SSH, если не 22 и не задан в ~/.ssh/config. */
+  port?: number;
+  /** Путь к приватному ключу на машине Studio. */
+  key?: string;
+}
+
 export interface ConnectionInput {
   name: string;
+  /** Порт Agent на его машине. */
   port: number;
   token: string;
+  ssh?: SshTarget;
 }
 
 export interface AgentStatus {
@@ -95,8 +107,11 @@ export interface AgentStatus {
   id: string;
   name: string;
   port: number;
+  ssh?: SshTarget;
   state: 'connecting' | 'online' | 'offline' | 'unauthorized';
   hello?: AgentHello;
+  /** Почему нет связи, например ошибка ssh. */
+  error?: string;
 }
 
 /** Studio-сервер присылает полный список при подключении и при каждом изменении. */

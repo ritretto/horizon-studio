@@ -96,6 +96,15 @@ aside form input {
   flex-direction: column;
   margin-top: 0.5rem;
 }
+.new-connection fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: inherit;
+  margin: 0;
+  padding: 0.5rem;
+  border: 1px solid #333;
+  font-size: 0.85em;
+}
 .chat {
   display: flex;
   flex-direction: column;

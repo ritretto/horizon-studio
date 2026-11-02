@@ -82,10 +82,13 @@ function App() {
     e.preventDefault();
     const form = e.currentTarget;
     const data = new FormData(form);
+    const field = (name: string) => String(data.get(name)).trim() || undefined;
+    const host = field('sshHost');
     const res = await request('connection.add', {
       name: String(data.get('name')),
       port: Number(data.get('port')),
       token: String(data.get('token')).trim(),
+      ssh: host && { host, user: field('sshUser'), port: Number(field('sshPort')) || undefined, key: field('sshKey') },
     });
     if ('error' in res) setError(res.error.message);
     else {
@@ -112,6 +115,13 @@ function App() {
                 ×
               </button>
             </div>
+            {a.ssh && (
+              <p className="muted">
+                ssh {a.ssh.user ? `${a.ssh.user}@` : ''}
+                {a.ssh.host}
+              </p>
+            )}
+            {a.error && <p className="warn">{a.error}</p>}
             {a.state === 'online' && a.hello && (
               <>
                 <ul className="tasks">
@@ -153,8 +163,15 @@ function App() {
           <summary>Новая Connection</summary>
           <form onSubmit={addConnection}>
             <input name="name" placeholder="Название" required />
-            <input name="port" type="number" defaultValue={7400} min={1} max={65535} required aria-label="Порт" />
+            <input name="port" type="number" defaultValue={7400} min={1} max={65535} required aria-label="Порт Agent" />
             <input name="token" placeholder="Access Token" required autoComplete="off" />
+            <fieldset>
+              <legend>Удалённый Agent — через SSH</legend>
+              <input name="sshHost" placeholder="Хост (пусто — Agent на этой машине)" />
+              <input name="sshUser" placeholder="Пользователь" />
+              <input name="sshPort" type="number" min={1} max={65535} placeholder="Порт SSH (22)" />
+              <input name="sshKey" placeholder="Путь к ключу (~/.ssh/id_ed25519)" />
+            </fieldset>
             <button>Добавить</button>
           </form>
         </details>

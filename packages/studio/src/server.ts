@@ -10,4 +10,6 @@ mkdirSync(dirname(configFile), { recursive: true });
 const port = Number(process.env.HORIZON_STUDIO_PORT ?? 7300);
 
 await startStudio(configFile, port);
+// Через process.exit, чтобы сработала остановка SSH-туннелей.
+for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => process.exit(0));
 console.log(`horizon studio on http://127.0.0.1:${port}, config ${configFile}`);

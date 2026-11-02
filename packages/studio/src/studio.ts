@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { extname } from 'node:path';
+import { dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { AgentsEvent, ConnectionInput, Response, StudioRequest } from '@horizon/protocol';
@@ -33,7 +33,9 @@ export function startStudio(configFile: string, port: number): Promise<Server> {
   const broadcast = () => send(agentsEvent());
   // ponytail: события всех Session уходят всем браузерам, браузер фильтрует по sessionId и seq.
   // Адресная рассылка — когда браузеров станет много (общая Studio).
-  const link = (c: Connection) => links.set(c.id, new AgentLink(c, broadcast, (e) => send({ ...e, agentId: c.id })));
+  const knownHosts = join(dirname(configFile), 'known_hosts');
+  const link = (c: Connection) =>
+    links.set(c.id, new AgentLink(c, knownHosts, broadcast, (e) => send({ ...e, agentId: c.id })));
   config.connections.forEach(link);
 
   async function handle(req: StudioRequest): Promise<Response> {
@@ -44,8 +46,8 @@ export function startStudio(configFile: string, port: number): Promise<Server> {
     }
     switch (req.method) {
       case 'connection.add': {
-        const { name, port, token } = req.params as ConnectionInput;
-        const c: Connection = { id: randomUUID(), name, port, token };
+        const { name, port, token, ssh } = req.params as ConnectionInput;
+        const c: Connection = { id: randomUUID(), name, port, token, ssh };
         config.connections.push(c);
         save();
         link(c);

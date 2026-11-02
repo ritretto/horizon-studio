@@ -1,11 +1,9 @@
 import WebSocket from 'ws';
-import type { AgentHello, AgentStatus, Response, SessionEvent } from '@horizon/protocol';
+import type { AgentHello, AgentStatus, ConnectionInput, Response, SessionEvent } from '@horizon/protocol';
+import { openTunnel, type Tunnel } from './tunnel.ts';
 
-export interface Connection {
+export interface Connection extends ConnectionInput {
   id: string;
-  name: string;
-  port: number;
-  token: string;
 }
 
 const RETRY_MS = 3000;
@@ -24,12 +22,16 @@ export class AgentLink {
   readonly connection: Connection;
   private onChange: () => void;
   private onEvent: (e: SessionEvent) => void;
+  private knownHosts: string;
+  private tunnel?: Tunnel;
 
-  constructor(connection: Connection, onChange: () => void, onEvent: (e: SessionEvent) => void) {
+  constructor(connection: Connection, knownHosts: string, onChange: () => void, onEvent: (e: SessionEvent) => void) {
     this.connection = connection;
+    this.knownHosts = knownHosts;
     this.onChange = onChange;
     this.onEvent = onEvent;
-    this.status = { id: connection.id, name: connection.name, port: connection.port, state: 'connecting' };
+    const { id, name, port, ssh } = connection;
+    this.status = { id, name, port, ssh, state: 'connecting' };
     this.open();
   }
 
@@ -47,10 +49,25 @@ export class AgentLink {
     clearTimeout(this.retry);
     clearInterval(this.refresh);
     this.ws?.close();
+    this.tunnel?.close();
   }
 
-  private open() {
-    const ws = new WebSocket(`ws://127.0.0.1:${this.connection.port}`, {
+  private async open() {
+    let port = this.connection.port;
+    if (this.connection.ssh) {
+      // ponytail: туннель поднимается заново на каждую попытку, пока Agent недоступен — ssh-подключение раз в RETRY_MS.
+      try {
+        this.tunnel = await openTunnel(this.connection.ssh, port, this.knownHosts, () => this.ws?.terminate());
+      } catch (e) {
+        if (this.closed) return;
+        this.set('offline', undefined, (e as Error).message);
+        this.retry = setTimeout(() => this.open(), RETRY_MS);
+        return;
+      }
+      if (this.closed) return this.tunnel.close();
+      port = this.tunnel.port;
+    }
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`, {
       headers: { authorization: `Bearer ${this.connection.token}` },
     });
     this.ws = ws;
@@ -79,15 +96,17 @@ export class AgentLink {
       for (const [id, resolve] of this.pending) resolve({ type: 'response', id, error: { message: 'agent disconnected' } });
       this.pending.clear();
       clearInterval(this.refresh);
+      this.tunnel?.close();
       if (this.closed) return;
       this.set(unauthorized ? 'unauthorized' : 'offline');
       this.retry = setTimeout(() => this.open(), RETRY_MS);
     });
   }
 
-  private set(state: AgentStatus['state'], hello?: AgentHello) {
-    if (this.status.state === state && JSON.stringify(this.status.hello) === JSON.stringify(hello)) return;
-    this.status = { ...this.status, state, hello };
+  private set(state: AgentStatus['state'], hello?: AgentHello, error?: string) {
+    const next = { ...this.status, state, hello, error };
+    if (JSON.stringify(next) === JSON.stringify(this.status)) return;
+    this.status = next;
     this.onChange();
   }
 }

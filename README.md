@@ -28,6 +28,8 @@ Agent запускает Claude Code через Claude Agent SDK с учётны
 
 При первом старте Agent создаёт Member `admin` и один раз печатает его Access Token. Конфиг — `<Agent Home>/config.json`: `port` (по умолчанию 7400), `defaultPermissionMode` — Permission Mode новых Task, `ask` (по умолчанию) или `auto`; `completedRetentionDays` — через сколько дней завершённая Task удаляется безвозвратно (по умолчанию 30). Подключение — WebSocket с заголовком `Authorization: Bearer <token>`.
 
+Удалённый Agent подключается через SSH: в Connection указываются хост, пользователь, порт SSH и ключ (необязательные поля берутся из `~/.ssh/config` и ssh-agent). Studio поднимает туннель системным `ssh` (нужен в PATH, на Windows — встроенный OpenSSH), держит его и переподключается при обрыве. Ключ должен быть без пароля или загружен в ssh-agent. Ключи хостов Studio хранит в `known_hosts` рядом со своим конфигом и запоминает при первом подключении.
+
 ## Документация
 
 - [CONTEXT.md](CONTEXT.md) — глоссарий терминов
