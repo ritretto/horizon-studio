@@ -8,9 +8,18 @@ export interface AgentInfo {
 
 /** Отдаётся методом `agent.info`: Agent и Member, от имени которого открыто соединение. */
 export interface AgentHello extends AgentInfo {
-  member: { id: string; name: string; accessLevel: AccessLevel };
+  /** `tokenId` — токен, которым открыто это соединение. */
+  member: { id: string; name: string; accessLevel: AccessLevel; tokenId: string };
   /** Engine этого Agent и их готовность на его машине. */
   engines: { id: EngineId; status: EngineStatus }[];
+}
+
+/** Member без секретов — для управления из Studio (только admin). */
+export interface MemberInfo {
+  id: string;
+  name: string;
+  accessLevel: AccessLevel;
+  tokens: { id: string; createdAt: string }[];
 }
 
 export interface Request {

@@ -278,3 +278,37 @@ test('После перезапуска Agent прерванные Session пр�
   c2.close();
   a2.server.close();
 });
+
+test('Member: admin создаёт user и токены, user видит только свои Task, отзыв токена закрывает соединение', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
+  const a = await startAgent(home, 0, { engine: echo });
+  const port = (a.server.address() as AddressInfo).port;
+  const admin = client(await connect(port, a.adminToken!));
+  const { id: bobId, token: bobToken } = await admin.call('member.create', { name: 'bob', accessLevel: 'user' });
+  const bobWs = await connect(port, bobToken);
+  const bob = client(bobWs);
+  assert.equal(await bob.call('member.list'), undefined, 'user не управляет Member');
+
+  await admin.call('task.create', { name: 'admin task' });
+  await bob.call('task.create', { name: 'bob task' });
+  assert.deepEqual((await bob.call('task.list')).map((t: Task) => t.name), ['bob task']);
+  assert.deepEqual((await admin.call('task.list')).map((t: Task) => t.name).sort(), ['admin task', 'bob task']);
+
+  const { token: bobToken2 } = await admin.call('member.issueToken', { memberId: bobId });
+  const listed = await admin.call('member.list');
+  const bobInfo = listed.find((m: any) => m.id === bobId);
+  assert.equal(bobInfo.tokens.length, 2);
+  assert.ok(!JSON.stringify(listed).includes('hash'), 'хэши токенов не отдаются');
+
+  const closed = new Promise((r) => bobWs.once('close', r));
+  assert.equal(await admin.call('member.revokeToken', { memberId: bobId, tokenId: bobInfo.tokens[0].id }), null);
+  await closed;
+  await assert.rejects(connect(port, bobToken), /401/);
+  client(await connect(port, bobToken2)).close();
+
+  // Последний токен admin отозвать нельзя.
+  const adminInfo = listed.find((m: any) => m.accessLevel === 'admin');
+  assert.equal(await admin.call('member.revokeToken', { memberId: adminInfo.id, tokenId: adminInfo.tokens[0].id }), undefined);
+  admin.close();
+  a.stop();
+});

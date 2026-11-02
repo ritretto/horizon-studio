@@ -44,6 +44,14 @@ main {
 .agent-head .link {
   margin-left: auto;
 }
+.agent-head .link + .link {
+  margin-left: 0;
+}
+.agent-head .muted {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 button.link {
   background: none;
   border: none;
@@ -215,4 +223,39 @@ button.danger {
 }
 .tasks button.completed {
   opacity: 0.55;
+}
+
+.members {
+  padding: 1rem;
+  overflow-y: auto;
+}
+.members table {
+  border-collapse: collapse;
+  margin: 1rem 0;
+}
+.members td {
+  padding: 0.4rem 0.8rem 0.4rem 0;
+  vertical-align: top;
+  border-bottom: 1px solid #333;
+}
+.members form {
+  display: flex;
+  gap: 0.5rem;
+}
+.members .token {
+  display: flex;
+  gap: 0.5rem;
+}
+.issued {
+  padding: 0.8rem;
+  border: 1px solid #c90;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+.issued code {
+  user-select: all;
+  font-size: 1.05em;
 }

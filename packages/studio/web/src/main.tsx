@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import type { AgentStatus, EngineStatus, PermissionMode, Task, TaskState } from '@horizon/protocol';
 import { useStudio } from './studio.ts';
 import { Chat } from './chat.tsx';
+import { Members } from './members.tsx';
 import './style.css';
 
 const modeLabel: Record<PermissionMode, string> = {
@@ -32,6 +33,9 @@ function App() {
   const [tasks, setTasks] = useState<Record<string, Task[]>>({});
   const [selected, setSelected] = useState<{ agentId: string; taskId: string }>();
   const task = selected && tasks[selected.agentId]?.find((t) => t.id === selected.taskId);
+  /** Agent, чьи Member открыты в основной панели вместо Task. */
+  const [membersOf, setMembersOf] = useState<string>();
+  const membersAgent = agents.find((a) => a.id === membersOf && a.hello?.member.accessLevel === 'admin');
   const [error, setError] = useState('');
 
   const online = agents.filter((a) => a.state === 'online').map((a) => a.id).join();
@@ -62,6 +66,7 @@ function App() {
     form.reset();
     await loadTasks(agentId);
     setSelected({ agentId, taskId: (res.result as Task).id });
+    setMembersOf(undefined);
   }
 
   // Состояние Task берём из событий Session — так его сразу видят все Studio.
@@ -111,6 +116,11 @@ function App() {
               <span className="muted">
                 {a.hello ? `v${a.hello.version} · ${a.hello.member.name}` : stateLabel[a.state]}
               </span>
+              {a.hello?.member.accessLevel === 'admin' && (
+                <button className="link" title="Member и Access Token" onClick={() => setMembersOf(a.id)}>
+                  Member
+                </button>
+              )}
               <button className="link" title="Удалить Connection" onClick={() => request('connection.remove', { id: a.id })}>
                 ×
               </button>
@@ -129,7 +139,7 @@ function App() {
                     <li key={t.id}>
                       <button
                         className={`${selected?.taskId === t.id ? 'active' : ''} ${t.state}`}
-                        onClick={() => setSelected({ agentId: a.id, taskId: t.id })}
+                        onClick={() => (setSelected({ agentId: a.id, taskId: t.id }), setMembersOf(undefined))}
                       >
                         {t.state === 'paused' && <span title="На паузе">⏸ </span>}
                         {t.state === 'completed' && <span title="Завершена">✓ </span>}
@@ -179,7 +189,13 @@ function App() {
       </aside>
 
       <main>
-        {selected && task && sessionId ? (
+        {membersAgent?.hello ? (
+          <Members
+            key={membersAgent.id}
+            self={membersAgent.hello.member}
+            request={(method, params) => request(method, params, membersAgent.id)}
+          />
+        ) : selected && task && sessionId ? (
           <>
             <header className="task-head">
               <h2>

@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { AgentHello, AgentInfo, PermissionMode, Request, Response } from '@horizon/protocol';
+import type { AccessLevel, AgentHello, AgentInfo, PermissionMode, Request, Response } from '@horizon/protocol';
 import pkg from '../package.json' with { type: 'json' };
 import { claudeCode, type Engine } from './engine.ts';
 import { Members, type Member } from './members.ts';
@@ -32,7 +32,9 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
   tasks.recover();
   setInterval(() => tasks.purge(), 60 * 60 * 1000).unref();
   const defaultPermissionMode = opts.defaultPermissionMode ?? 'ask';
-  const adminToken = members.isEmpty ? members.create('admin', 'admin') : undefined;
+  const adminToken = members.isEmpty ? members.create('admin', 'admin').token : undefined;
+  /** Открытые соединения и токены, по которым они открыты: отзыв токена их закрывает. */
+  const sockets = new Map<WebSocket, string>();
 
   const server = createServer((req, res) => {
     if (req.url === '/health') {
@@ -45,14 +47,19 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
     const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
-    const member = token && members.authenticate(token);
-    if (!member) {
+    const auth = token && members.authenticate(token);
+    if (!auth) {
       socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
       return;
     }
+    const { member, tokenId } = auth;
     wss.handleUpgrade(req, socket, head, (ws) => {
+      sockets.set(ws, tokenId);
       const subscriptions = new Map<string, () => void>();
-      ws.on('close', () => subscriptions.forEach((unsubscribe) => unsubscribe()));
+      ws.on('close', () => {
+        sockets.delete(ws);
+        subscriptions.forEach((unsubscribe) => unsubscribe());
+      });
       ws.on('message', (data) => {
         let req: Request;
         try {
@@ -61,7 +68,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
           ws.close(1003, 'invalid JSON');
           return;
         }
-        handle(req, { member, engine, tasks, ws, subscriptions, defaultPermissionMode })
+        handle(req, { member, tokenId, members, sockets, engine, tasks, ws, subscriptions, defaultPermissionMode })
           .catch((e): Response => ({ type: 'response', id: req.id, error: { message: e instanceof Error ? e.message : String(e) } }))
           .then((res) => ws.send(JSON.stringify(res)));
       });
@@ -77,6 +84,9 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
 
 interface Context {
   member: Member;
+  tokenId: string;
+  members: Members;
+  sockets: Map<WebSocket, string>;
   engine: Engine;
   tasks: Tasks;
   ws: WebSocket;
@@ -85,17 +95,36 @@ interface Context {
 }
 
 const permissionModes: PermissionMode[] = ['ask', 'auto'];
+const accessLevels: AccessLevel[] = ['admin', 'user'];
 
-async function handle(req: Request, { member, engine, tasks, ws, subscriptions, defaultPermissionMode }: Context): Promise<Response> {
+async function handle(req: Request, { member, tokenId, members, sockets, engine, tasks, ws, subscriptions, defaultPermissionMode }: Context): Promise<Response> {
   const ok = (result: unknown): Response => ({ type: 'response', id: req.id, result });
   const fail = (message: string): Response => ({ type: 'response', id: req.id, error: { message } });
   const p = (req.params ?? {}) as Record<string, any>;
 
+  if (req.method.startsWith('member.') && member.accessLevel !== 'admin') return fail('only admin can manage Members');
   switch (req.method) {
+    case 'member.list':
+      return ok(members.list());
+    case 'member.create':
+      if (typeof p.name !== 'string' || !p.name.trim()) return fail('name is required');
+      if (!accessLevels.includes(p.accessLevel)) return fail('invalid accessLevel');
+      return ok(members.create(p.name.trim(), p.accessLevel));
+    case 'member.issueToken': {
+      const token = members.issue(p.memberId);
+      return token ? ok({ token }) : fail('unknown member');
+    }
+    case 'member.revokeToken': {
+      const error = members.revoke(p.memberId, p.tokenId);
+      if (error) return fail(error);
+      // После ответа: отзыв собственного токена закрывает и это соединение.
+      setImmediate(() => sockets.forEach((t, s) => t === p.tokenId && s.close(1008, 'token revoked')));
+      return ok(null);
+    }
     case 'agent.info': {
       const result: AgentHello = {
         ...info,
-        member: { id: member.id, name: member.name, accessLevel: member.accessLevel },
+        member: { id: member.id, name: member.name, accessLevel: member.accessLevel, tokenId },
         engines: [{ id: 'claude-code', status: (await engine.status?.()) ?? 'ready' }],
       };
       return ok(result);
