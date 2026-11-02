@@ -124,7 +124,10 @@ function App() {
   return (
     <div className="layout">
       <aside>
-        <h1>HorizonStudio</h1>
+        <h1>
+          <img src="/favicon.png" alt="" width={24} height={24} />
+          HorizonStudio
+        </h1>
         {!connected && <p className="warn">Нет связи со Studio-сервером, переподключаемся…</p>}
         {agents.length === 0 && <p className="muted">Добавьте Connection к Agent ниже.</p>}
 

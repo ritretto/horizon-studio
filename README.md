@@ -1,4 +1,4 @@
-# HorizonStudio
+# <img src="assets/icon.png" alt="" width="40" align="top"> HorizonStudio
 
 Среда для распределённой разработки кода с ИИ. **Studio** (веб-интерфейс) подключается к **Agent**'ам на локальных и удалённых машинах (Windows/macOS/Linux) и ведёт на них **Task** с ИИ-инструментами (Engine), например Claude Code. Работа продолжается при отключении Studio и переживает перезагрузку машины.
 

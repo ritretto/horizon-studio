@@ -17,6 +17,7 @@ const types: Record<string, string> = {
   '.js': 'text/javascript',
   '.css': 'text/css',
   '.svg': 'image/svg+xml',
+  '.png': 'image/png',
 };
 
 export function startStudio(configFile: string, port: number): Promise<Server> {
