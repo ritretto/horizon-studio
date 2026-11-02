@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,15 +20,22 @@ switch (positionals[0]) {
   case 'run':
     run();
     break;
+  case 'start': // run в фоне без окна консоли (автозапуск на Windows)
+    spawn(process.execPath, [fileURLToPath(import.meta.url), 'run', '--home', home], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    }).unref();
+    break;
   case 'install':
     await install(resolve(values.agent ?? fileURLToPath(new URL('../../agent/dist/', import.meta.url))));
     break;
   case 'uninstall':
-    uninstallService();
+    uninstallService(home);
     console.log(`Сервис удалён. Agent Home (${home}) не тронут.`);
     break;
   default:
-    console.log('horizon-launcher run | install [--agent <сборка Agent>] | uninstall  [--home <Agent Home>]');
+    console.log('horizon-launcher run | start | install [--agent <сборка Agent>] | uninstall  [--home <Agent Home>]');
     process.exit(positionals[0] ? 1 : 0);
 }
 
@@ -37,6 +44,7 @@ switch (positionals[0]) {
  * Agent подтверждает её после старта, а если не подтвердил за TRIAL_MS или упал — откат на `current`.
  */
 function run() {
+  writeFileSync(join(home, 'launcher.pid'), String(process.pid)); // для остановки на Windows
   const logFile = join(home, 'agent.log');
   let child: ReturnType<typeof spawn>;
   let stopping = false;
@@ -114,7 +122,7 @@ async function install(agentDir: string) {
 
   const logFile = join(home, 'agent.log');
   const logStart = existsSync(logFile) ? statSync(logFile).size : 0;
-  installService(home, [process.execPath, launcher, 'run', '--home', home]);
+  installService(home, launcher);
 
   // Ждём старта Agent; при первом запуске он печатает Access Token admin.
   for (let i = 0; i < 60; i++) {

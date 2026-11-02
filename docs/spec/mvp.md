@@ -18,7 +18,7 @@
 - TypeScript, Node.js 22+, npm workspaces: `agent`, `launcher`, `studio`, `protocol`.
 - **Протокол Studio ↔ Agent**: один HTTP-порт на Agent. WebSocket с JSON-сообщениями `request {id, method, params}` / `response {id, result | error}` / `event {sessionId, seq, ...}`. Access Token передаётся при установке соединения. События Session нумеруются сквозным `seq` и пишутся в лог Session. `subscribe {sessionId, fromSeq}` досылает историю, а затем стримит новые события. Загрузка бандла для Agent Update — HTTP `PUT /update` с токеном в заголовке.
 - **Studio**: браузер общается только со Studio-сервером (`node:http` + `ws`). Studio-сервер держит Connection, SSH-туннели и Access Token и ретранслирует запросы и события, добавляя `agentId`. Фронт — React + Vite.
-- **Launcher** работает как пользовательский сервис (от пользователя ОС, без прав администратора): macOS — LaunchAgent, Linux — `systemd --user` + `loginctl enable-linger`, Windows — Task Scheduler при запуске системы. Установка: `horizon-launcher install` / `uninstall`. На macOS Agent стартует только после входа пользователя (для выделенной машины нужен автологин).
+- **Launcher** работает как пользовательский сервис (от пользователя ОС, без прав администратора): macOS — LaunchAgent, Linux — `systemd --user` + `loginctl enable-linger`, Windows — автозапуск при входе пользователя (`HKCU\…\Run`). Установка: `horizon-launcher install` / `uninstall`. На macOS и Windows Agent стартует только после входа пользователя (для выделенной машины нужен автологин).
 
 ## Требования
 

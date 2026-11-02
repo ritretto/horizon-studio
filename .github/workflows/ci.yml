@@ -16,3 +16,44 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+  # Установка Agent как сервиса на Windows: настоящие install / uninstall (запись HKCU\…\Run).
+  windows-launcher:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: install
+        shell: pwsh
+        run: |
+          $h = "$env:RUNNER_TEMP\agent home"
+          New-Item -ItemType Directory -Force $h | Out-Null
+          '{"port":7431}' | Set-Content "$h\config.json"
+          node packages/launcher/dist/launcher.mjs install --home $h
+          if ($LASTEXITCODE) { Get-Content "$h\agent.log" -ErrorAction SilentlyContinue; exit 1 }
+          reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v HorizonAgent
+          (Invoke-WebRequest http://127.0.0.1:7431/health).Content
+      - name: reinstall replaces the running Launcher
+        shell: pwsh
+        run: |
+          $h = "$env:RUNNER_TEMP\agent home"
+          node packages/launcher/dist/launcher.mjs install --home $h
+          if ($LASTEXITCODE) { Get-Content "$h\agent.log"; exit 1 }
+          $n = (Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object CommandLine -like '*launcher.mjs*run*').Count
+          if ($n -ne 1) { "Launcher processes: $n"; exit 1 }
+      - name: uninstall
+        shell: pwsh
+        run: |
+          $h = "$env:RUNNER_TEMP\agent home"
+          node packages/launcher/dist/launcher.mjs uninstall --home $h
+          Start-Sleep 2
+          reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v HorizonAgent 2>$null
+          if ($LASTEXITCODE -eq 0) { 'Run key still present'; exit 1 }
+          $left = Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object CommandLine -like '*agent home*'
+          if ($left) { $left | Select-Object ProcessId, CommandLine; exit 1 }
+          try { Invoke-WebRequest http://127.0.0.1:7431/health; 'Agent still answers'; exit 1 } catch { 'Agent stopped' }
+          exit 0 # иначе код шага — от последнего reg query, который и должен был не найти ключ

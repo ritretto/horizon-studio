@@ -1,5 +1,5 @@
-import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,9 +8,11 @@ const LABEL = 'dev.horizon.agent';
 const plist = join(homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
 const unit = join(homedir(), '.config', 'systemd', 'user', 'horizon-agent.service');
 const gui = `gui/${userInfo().uid}`;
+const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 
-/** Регистрирует и запускает сервис с командой `command`; повторная установка заменяет прежнюю. */
-export function installService(home: string, command: string[]) {
+/** Регистрирует и запускает сервис: `launcher run --home <home>`; повторная установка заменяет прежнюю. */
+export function installService(home: string, launcher: string) {
+  const command = [process.execPath, launcher, 'run', '--home', home];
   // PATH пользователя — чтобы Engine находил git, node и прочие инструменты так же, как в терминале.
   const path = process.env.PATH ?? '';
   switch (process.platform) {
@@ -72,12 +74,30 @@ WantedBy=default.target
 Выполните: sudo loginctl enable-linger ${userInfo().username}`);
       return;
     }
+    case 'win32': {
+      // Запуск при входе пользователя: без прав администратора и сохранённого пароля.
+      // `start` поднимает Launcher без окна консоли и сразу выходит.
+      const start = [process.execPath, launcher, 'start', '--home', home];
+      execFileSync('reg', ['add', RUN_KEY, '/v', 'HorizonAgent', '/t', 'REG_SZ', '/d', start.map((a) => `"${a}"`).join(' '), '/f']);
+      stopWindows(home);
+      spawn(start[0], start.slice(1), { stdio: 'ignore', windowsHide: true });
+      return;
+    }
     default:
-      throw new Error(`установка сервиса на ${process.platform} пока не поддерживается`);
+      throw new Error(`установка сервиса на ${process.platform} не поддерживается`);
   }
 }
 
-export function uninstallService() {
+/**
+ * Останавливает Launcher вместе с Agent и Engine.
+ * ponytail: на Windows штатной остановки нет — дерево процессов завершается жёстко; Session продолжатся при следующем старте (#8).
+ */
+function stopWindows(home: string) {
+  const pid = join(home, 'launcher.pid');
+  if (existsSync(pid)) spawnSync('taskkill', ['/PID', readFileSync(pid, 'utf8').trim(), '/T', '/F']);
+}
+
+export function uninstallService(home: string) {
   switch (process.platform) {
     case 'darwin':
       spawnSync('launchctl', ['bootout', `${gui}/${LABEL}`]);
@@ -88,7 +108,11 @@ export function uninstallService() {
       rmSync(unit, { force: true });
       spawnSync('systemctl', ['--user', 'daemon-reload']);
       return;
+    case 'win32':
+      spawnSync('reg', ['delete', RUN_KEY, '/v', 'HorizonAgent', '/f']);
+      stopWindows(home);
+      return;
     default:
-      throw new Error(`установка сервиса на ${process.platform} пока не поддерживается`);
+      throw new Error(`установка сервиса на ${process.platform} не поддерживается`);
   }
 }
