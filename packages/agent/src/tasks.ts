@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { PermissionMode, SessionEvent, SessionItem, Task } from '@horizon/protocol';
+import type { PermissionMode, SessionEvent, SessionItem, Task, TaskState } from '@horizon/protocol';
 import type { Engine, EngineRun } from './engine.ts';
 import type { Member } from './members.ts';
 
@@ -30,10 +30,12 @@ export class Tasks {
   private tasks = new Map<string, StoredTask>();
   private sessions = new Map<string, Session>();
   private engine: Engine;
+  private retentionMs: number;
 
-  constructor(home: string, engine: Engine) {
+  constructor(home: string, engine: Engine, retentionDays: number) {
     this.dir = join(home, 'tasks');
     this.engine = engine;
+    this.retentionMs = retentionDays * 24 * 60 * 60 * 1000;
     mkdirSync(this.dir, { recursive: true });
     for (const id of readdirSync(this.dir)) {
       const t: StoredTask = JSON.parse(readFileSync(join(this.dir, id, 'task.json'), 'utf8'));
@@ -56,11 +58,11 @@ export class Tasks {
     mkdirSync(join(this.dir, task.id, 'sessions'));
     this.tasks.set(task.id, task);
     this.save(task);
-    return publicTask(task);
+    return this.public(task);
   }
 
   list(member: Member): Task[] {
-    return [...this.tasks.values()].filter((t) => canSee(member, t)).map(publicTask);
+    return [...this.tasks.values()].filter((t) => canSee(member, t)).map((t) => this.public(t));
   }
 
   /** Session по id, если Member её видит. */
@@ -71,26 +73,67 @@ export class Tasks {
   }
 
   /** Пауза: все Session Task корректно останавливаются; id разговоров Engine сохранены. */
-  pause(taskId: string, member: Member): Task | undefined {
-    const task = this.tasks.get(taskId);
-    if (!task || !canSee(member, task)) return;
-    if (task.state !== 'paused') {
-      task.state = 'paused';
-      for (const s of task.sessions) this.load(task, s.id).pause();
-      this.save(task);
-    }
-    return publicTask(task);
+  pause(taskId: string, member: Member) {
+    return this.transition(taskId, member, 'active', 'paused', (s) => s.stop('paused'));
   }
 
-  resume(taskId: string, member: Member): Task | undefined {
+  resume(taskId: string, member: Member) {
+    return this.transition(taskId, member, 'paused', 'active', (s) => s.resume());
+  }
+
+  complete(taskId: string, member: Member) {
+    return this.transition(taskId, member, ['active', 'paused'], 'completed', (s) => s.stop('completed'));
+  }
+
+  /** Завершённая Task возвращается на паузу — дальше как обычно «Продолжить». */
+  reopen(taskId: string, member: Member) {
+    return this.transition(taskId, member, 'completed', 'paused', (s) => s.reopened());
+  }
+
+  /** Безвозвратно удаляет завершённую Task; false — нет такой, нет прав или она не завершена. */
+  delete(taskId: string, member: Member): boolean {
     const task = this.tasks.get(taskId);
-    if (!task || !canSee(member, task)) return;
-    if (task.state === 'paused') {
-      task.state = 'active';
-      this.save(task);
-      for (const s of task.sessions) this.load(task, s.id).resume();
+    if (!task || !canSee(member, task) || task.state !== 'completed') return false;
+    this.remove(task);
+    return true;
+  }
+
+  /** Удаляет завершённые Task, срок хранения которых истёк. */
+  purge(now = Date.now()) {
+    for (const t of this.tasks.values()) if (t.state === 'completed' && Date.parse(this.public(t).deleteAt!) <= now) this.remove(t);
+  }
+
+  private transition(
+    taskId: string,
+    member: Member,
+    from: TaskState | TaskState[],
+    to: TaskState,
+    apply: (s: Session) => void,
+  ): Task | string {
+    const task = this.tasks.get(taskId);
+    if (!task || !canSee(member, task)) return 'unknown task';
+    if (task.state === to) return this.public(task);
+    if (![from].flat().includes(task.state ?? 'active')) return `Task is ${task.state}`;
+    task.state = to;
+    task.completedAt = to === 'completed' ? new Date().toISOString() : undefined;
+    this.save(task);
+    for (const s of task.sessions) apply(this.load(task, s.id));
+    this.save(task);
+    return this.public(task);
+  }
+
+  private remove(task: StoredTask) {
+    for (const s of task.sessions) {
+      this.sessions.get(s.id)?.stop();
+      this.sessions.delete(s.id);
     }
-    return publicTask(task);
+    this.tasks.delete(task.id);
+    rmSync(join(this.dir, task.id), { recursive: true, force: true });
+  }
+
+  private public(t: StoredTask): Task {
+    const deleteAt = t.completedAt && new Date(Date.parse(t.completedAt) + this.retentionMs).toISOString();
+    return { ...t, deleteAt, sessions: t.sessions.map(({ id }) => ({ id })) };
   }
 
   private load(task: StoredTask, sessionId: string): Session {
@@ -109,7 +152,6 @@ export class Tasks {
 }
 
 const canSee = (m: Member, t: Task) => m.accessLevel === 'admin' || t.ownerId === m.id;
-const publicTask = (t: StoredTask): Task => ({ ...t, sessions: t.sessions.map(({ id }) => ({ id })) });
 
 export class Session {
   private log: string;
@@ -138,23 +180,29 @@ export class Session {
     this.midTurn = history.filter((e) => e.item.kind !== 'status').at(-1)?.item.kind !== 'turn_end' && history.length > 0;
   }
 
-  /** Отправляет сообщение; false, если Task на паузе. */
+  /** Отправляет сообщение; false, если Task на паузе или завершена. */
   send(text: string): boolean {
-    if (this.task.state === 'paused') return false;
+    if (this.task.state === 'paused' || this.task.state === 'completed') return false;
     this.append({ kind: 'user', text });
     this.start().send(text);
     return true;
   }
 
-  pause() {
+  /** Останавливает Engine; со статусом — отмечает это в журнале (пауза или завершение). */
+  stop(status?: 'paused' | 'completed') {
     this.generation++;
     this.run?.close();
     this.run = undefined;
     // Процесса Engine больше нет — висящие запросы разрешений снимаются.
     for (const [requestId] of this.pending) this.append({ kind: 'permission_answer', requestId, allow: false, always: false });
     this.pending.clear();
+    if (!status) return;
     this.stored.pausedMidTurn = this.midTurn;
-    this.append({ kind: 'status', status: 'paused' });
+    this.append({ kind: 'status', status });
+  }
+
+  reopened() {
+    this.append({ kind: 'status', status: 'reopened' });
   }
 
   resume() {

@@ -193,3 +193,17 @@ aside select {
   border-top: 1px dashed var(--line);
   padding-top: 0.3rem;
 }
+.task-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+button.danger {
+  color: #fff;
+  background: #e03131;
+  border: none;
+  border-radius: 4px;
+  padding: 0.2rem 0.6rem;
+}
+.tasks button.completed {
+  opacity: 0.55;
+}

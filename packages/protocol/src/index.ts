@@ -29,15 +29,23 @@ export type EngineId = 'claude-code';
 /** `ask` — каждый запрос разрешения ждёт ответа пользователя (Session в Waiting); `auto` — всё разрешается. */
 export type PermissionMode = 'ask' | 'auto';
 
+export type TaskState = 'active' | 'paused' | 'completed';
+
 export interface Task {
   id: string;
   name: string;
   ownerId: string;
   engine: EngineId;
   permissionMode: PermissionMode;
-  /** `paused` — все Session остановлены с возможностью продолжить; сами не продолжаются. */
-  state: 'active' | 'paused';
+  /**
+   * `paused` — все Session остановлены с возможностью продолжить; сами не продолжаются.
+   * `completed` — Session остановлены, история и Task Directory сохранены до `deleteAt`; можно переоткрыть в `paused`.
+   */
+  state: TaskState;
   createdAt: string;
+  completedAt?: string;
+  /** Когда Agent удалит завершённую Task безвозвратно. */
+  deleteAt?: string;
   sessions: { id: string }[];
 }
 
@@ -50,7 +58,7 @@ export type SessionItem =
   | { kind: 'permission'; requestId: string; tool: string; input: unknown; reason?: string }
   | { kind: 'permission_answer'; requestId: string; allow: boolean; always: boolean }
   | { kind: 'turn_end'; error?: string }
-  | { kind: 'status'; status: 'paused' | 'resumed' }
+  | { kind: 'status'; status: 'paused' | 'resumed' | 'completed' | 'reopened' }
   | { kind: 'error'; message: string };
 
 /**

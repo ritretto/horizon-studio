@@ -18,11 +18,15 @@ export interface AgentOptions {
   engine?: Engine;
   /** Permission Mode для новых Task, если он не указан явно (из конфига Agent). */
   defaultPermissionMode?: PermissionMode;
+  /** Через сколько дней завершённая Task удаляется безвозвратно. */
+  completedRetentionDays?: number;
 }
 
 export function startAgent(home: string, port: number, opts: AgentOptions = {}): Promise<StartedAgent> {
   const members = new Members(home);
-  const tasks = new Tasks(home, opts.engine ?? claudeCode);
+  const tasks = new Tasks(home, opts.engine ?? claudeCode, opts.completedRetentionDays ?? 30);
+  tasks.purge();
+  setInterval(() => tasks.purge(), 60 * 60 * 1000).unref();
   const defaultPermissionMode = opts.defaultPermissionMode ?? 'ask';
   const adminToken = members.isEmpty ? members.create('admin', 'admin') : undefined;
 
@@ -91,15 +95,20 @@ function handle(req: Request, { member, tasks, ws, subscriptions, defaultPermiss
     case 'task.list':
       return ok(tasks.list(member));
     case 'task.pause':
-    case 'task.resume': {
-      const task = req.method === 'task.pause' ? tasks.pause(p.taskId, member) : tasks.resume(p.taskId, member);
-      return task ? ok(task) : fail('unknown task');
+    case 'task.resume':
+    case 'task.complete':
+    case 'task.reopen': {
+      const action = req.method.slice('task.'.length) as 'pause' | 'resume' | 'complete' | 'reopen';
+      const task = tasks[action](p.taskId, member);
+      return typeof task === 'string' ? fail(task) : ok(task);
     }
+    case 'task.delete':
+      return tasks.delete(p.taskId, member) ? ok(null) : fail('only a completed Task you can see can be deleted');
     case 'session.send': {
       const session = tasks.session(p.sessionId, member);
       if (!session) return fail('unknown session');
       if (typeof p.text !== 'string' || !p.text.trim()) return fail('text is required');
-      if (!session.send(p.text)) return fail('Task на паузе');
+      if (!session.send(p.text)) return fail('Task на паузе или завершена');
       return ok(null);
     }
     case 'session.answer': {

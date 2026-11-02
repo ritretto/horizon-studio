@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { AgentStatus, PermissionMode, Task } from '@horizon/protocol';
+import type { AgentStatus, PermissionMode, Task, TaskState } from '@horizon/protocol';
 import { useStudio } from './studio.ts';
 import { Chat } from './chat.tsx';
 import './style.css';
@@ -10,12 +10,16 @@ const modeLabel: Record<PermissionMode, string> = {
   auto: 'всё разрешено',
 };
 
+const statusToState = { paused: 'paused', reopened: 'paused', completed: 'completed', resumed: 'active' } as const;
+
 const stateLabel: Record<AgentStatus['state'], string> = {
   connecting: 'подключение…',
   online: 'online',
   offline: 'offline',
   unauthorized: 'неверный токен',
 };
+
+const completedLast = (a: Task, b: Task) => Number(a.state === 'completed') - Number(b.state === 'completed');
 
 function App() {
   const { agents, connected, events, request } = useStudio();
@@ -54,14 +58,17 @@ function App() {
     setSelected({ agentId, taskId: (res.result as Task).id });
   }
 
-  // Состояние паузы берём из событий Session — так его сразу видят все Studio.
+  // Состояние Task берём из событий Session — так его сразу видят все Studio.
   const status = sessionId ? events[sessionId]?.findLast((e) => e.item.kind === 'status')?.item : undefined;
-  const paused = status?.kind === 'status' ? status.status === 'paused' : task?.state === 'paused';
+  const state: TaskState | undefined = status?.kind === 'status' ? statusToState[status.status] : task?.state;
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  useEffect(() => setConfirmDelete(false), [selected?.taskId, state]);
 
-  async function setPaused(pause: boolean) {
+  async function act(method: 'pause' | 'resume' | 'complete' | 'reopen' | 'delete') {
     if (!selected || !task) return;
-    const res = await request(pause ? 'task.pause' : 'task.resume', { taskId: task.id }, selected.agentId);
+    const res = await request(`task.${method}`, { taskId: task.id }, selected.agentId);
     if ('error' in res) setError(res.error.message);
+    else if (method === 'delete') setSelected(undefined);
     await loadTasks(selected.agentId);
   }
 
@@ -102,13 +109,14 @@ function App() {
             {a.state === 'online' && (
               <>
                 <ul className="tasks">
-                  {(tasks[a.id] ?? []).map((t) => (
+                  {[...(tasks[a.id] ?? [])].sort(completedLast).map((t) => (
                     <li key={t.id}>
                       <button
-                        className={selected?.taskId === t.id ? 'active' : ''}
+                        className={`${selected?.taskId === t.id ? 'active' : ''} ${t.state}`}
                         onClick={() => setSelected({ agentId: a.id, taskId: t.id })}
                       >
                         {t.state === 'paused' && <span title="На паузе">⏸ </span>}
+                        {t.state === 'completed' && <span title="Завершена">✓ </span>}
                         {t.name}
                       </button>
                     </li>
@@ -147,12 +155,30 @@ function App() {
               <h2>
                 {task.name} <span className={`mode ${task.permissionMode}`}>{modeLabel[task.permissionMode]}</span>
               </h2>
-              {agentOnline && <button onClick={() => setPaused(!paused)}>{paused ? 'Продолжить' : 'Пауза'}</button>}
+              {agentOnline && (
+                <div className="task-actions">
+                  {state === 'active' && <button onClick={() => act('pause')}>Пауза</button>}
+                  {state === 'paused' && <button onClick={() => act('resume')}>Продолжить</button>}
+                  {state !== 'completed' && <button onClick={() => act('complete')}>Завершить</button>}
+                  {state === 'completed' && <button onClick={() => act('reopen')}>Переоткрыть</button>}
+                  {state === 'completed' &&
+                    (confirmDelete ? (
+                      <button className="danger" onClick={() => act('delete')}>
+                        Удалить безвозвратно?
+                      </button>
+                    ) : (
+                      <button onClick={() => setConfirmDelete(true)}>Удалить</button>
+                    ))}
+                </div>
+              )}
             </header>
+            {state === 'completed' && task.deleteAt && (
+              <p className="muted">Task завершена и будет удалена {new Date(task.deleteAt).toLocaleDateString()}.</p>
+            )}
             {!agentOnline && <p className="warn">Agent недоступен — Session продолжает работать на нём, история подгрузится после переподключения.</p>}
             <Chat
               events={events[sessionId] ?? []}
-              paused={paused}
+              state={state ?? 'active'}
               onSend={(text) => request('session.send', { sessionId, text }, selected.agentId)}
               onAnswer={(requestId, allow, always) =>
                 request('session.answer', { sessionId, requestId, allow, always }, selected.agentId)

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import type { SessionItem, StudioSessionEvent } from '@horizon/protocol';
+import type { SessionItem, StudioSessionEvent, TaskState } from '@horizon/protocol';
 
 type ToolResult = Extract<SessionItem, { kind: 'tool_result' }>;
 type Answer = Extract<SessionItem, { kind: 'permission_answer' }>;
@@ -7,12 +7,13 @@ export type OnAnswer = (requestId: string, allow: boolean, always: boolean) => v
 
 interface Props {
   events: StudioSessionEvent[];
-  paused: boolean;
+  state: TaskState;
   onSend(text: string): void;
   onAnswer: OnAnswer;
 }
 
-export function Chat({ events, paused, onSend, onAnswer }: Props) {
+export function Chat({ events, state, onSend, onAnswer }: Props) {
+  const stopped = state !== 'active';
   const [text, setText] = useState('');
   const end = useRef<HTMLDivElement>(null);
   const results = new Map<string, ToolResult>();
@@ -23,7 +24,7 @@ export function Chat({ events, paused, onSend, onAnswer }: Props) {
   }
   const waiting = events.some((e) => e.item.kind === 'permission' && !answers.has(e.item.requestId));
   const last = events.filter((e) => e.item.kind !== 'status').at(-1);
-  const busy = !paused && !!last && last.item.kind !== 'turn_end';
+  const busy = !stopped && !!last && last.item.kind !== 'turn_end';
 
   // Без фигурных скобок нельзя: в новых браузерах scrollIntoView возвращает Promise, а React примет его за cleanup.
   useEffect(() => {
@@ -44,8 +45,8 @@ export function Chat({ events, paused, onSend, onAnswer }: Props) {
         {events.map((e) => (
           <Item key={e.seq} item={e.item} results={results} answers={answers} onAnswer={onAnswer} />
         ))}
-        {paused ? (
-          <p className="muted">Task на паузе</p>
+        {stopped ? (
+          <p className="muted">{state === 'paused' ? 'Task на паузе' : 'Task завершена'}</p>
         ) : waiting ? (
           <p className="warn">Ждёт вашего решения</p>
         ) : (
@@ -58,11 +59,17 @@ export function Chat({ events, paused, onSend, onAnswer }: Props) {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && (e.metaKey || e.ctrlKey) && submit(e)}
-          placeholder={paused ? 'Task на паузе — нажмите «Продолжить»' : 'Сообщение (⌘/Ctrl+Enter — отправить)'}
-          disabled={paused}
+          placeholder={
+            state === 'paused'
+              ? 'Task на паузе — нажмите «Продолжить»'
+              : state === 'completed'
+                ? 'Task завершена — переоткройте, чтобы продолжить'
+                : 'Сообщение (⌘/Ctrl+Enter — отправить)'
+          }
+          disabled={stopped}
           rows={3}
         />
-        <button disabled={paused}>Отправить</button>
+        <button disabled={stopped}>Отправить</button>
       </form>
     </section>
   );
@@ -123,13 +130,15 @@ function Item({ item, results, answers, onAnswer }: ItemProps) {
     case 'permission_answer':
       return null; // показываются внутри своего tool / permission
     case 'status':
-      return <div className="divider">{item.status === 'paused' ? 'Пауза' : 'Продолжено'}</div>;
+      return <div className="divider">{statusLabel[item.status]}</div>;
     case 'turn_end':
       return item.error ? <p className="warn">Ход завершился с ошибкой: {item.error}</p> : null;
     case 'error':
       return <p className="warn">{item.message}</p>;
   }
 }
+
+const statusLabel = { paused: 'Пауза', resumed: 'Продолжено', completed: 'Завершена', reopened: 'Переоткрыта' };
 
 function summary(input: unknown): string {
   const v = input as Record<string, unknown>;

@@ -26,7 +26,7 @@ npm run dev -w @horizon/studio         # фронт Studio (Vite), /ws прок�
 
 Agent запускает Claude Code через Claude Agent SDK с учётными данными, уже настроенными на машине (`claude` login или `ANTHROPIC_API_KEY`). Task хранятся в `<Agent Home>/tasks/<id>/`: `workspace/` — Task Directory, `sessions/*.jsonl` — журнал событий Session.
 
-При первом старте Agent создаёт Member `admin` и один раз печатает его Access Token. Конфиг — `<Agent Home>/config.json`: `port` (по умолчанию 7400), `defaultPermissionMode` — Permission Mode новых Task, `ask` (по умолчанию) или `auto`. Подключение — WebSocket с заголовком `Authorization: Bearer <token>`.
+При первом старте Agent создаёт Member `admin` и один раз печатает его Access Token. Конфиг — `<Agent Home>/config.json`: `port` (по умолчанию 7400), `defaultPermissionMode` — Permission Mode новых Task, `ask` (по умолчанию) или `auto`; `completedRetentionDays` — через сколько дней завершённая Task удаляется безвозвратно (по умолчанию 30). Подключение — WebSocket с заголовком `Authorization: Bearer <token>`.
 
 ## Документация
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -185,6 +185,46 @@ test('Пауза останавливает Engine посреди хода, пе
   assert.deepEqual(events[0].item, { kind: 'status', status: 'resumed' });
   assert.equal(events[1].item.kind, 'user');
   assert.deepEqual(log.slice(3), ['start resume=conv-1', 'send [HorizonStudio]']);
+  c2.close();
+  a2.server.close();
+});
+
+test('Завершение, переоткрытие, удаление вручную и по сроку хранения', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
+  const a1 = await startAgent(home, 0, { engine: echo });
+  const c1 = client(await connect((a1.server.address() as AddressInfo).port, a1.adminToken!));
+  const kept: Task = await c1.call('task.create', { name: 'kept' });
+  const doomed: Task = await c1.call('task.create', { name: 'doomed' });
+  const sessionId = kept.sessions[0].id;
+  await c1.call('session.subscribe', { sessionId, fromSeq: 0 });
+
+  assert.equal(await c1.call('task.delete', { taskId: kept.id }), undefined, 'активную Task удалить нельзя');
+  const done: Task = await c1.call('task.complete', { taskId: kept.id });
+  assert.equal(done.state, 'completed');
+  assert.equal(Date.parse(done.deleteAt!) - Date.parse(done.completedAt!), 30 * 24 * 60 * 60 * 1000);
+  assert.deepEqual((await c1.until(1))[0].item, { kind: 'status', status: 'completed' });
+  assert.equal(await c1.call('session.send', { sessionId, text: 'x' }), undefined, 'завершённая не принимает сообщения');
+  assert.equal(await c1.call('task.pause', { taskId: kept.id }), undefined, 'из completed — только reopen');
+
+  const reopened: Task = await c1.call('task.reopen', { taskId: kept.id });
+  assert.equal(reopened.state, 'paused');
+  assert.equal(reopened.deleteAt, undefined);
+  assert.equal((await c1.call('task.resume', { taskId: kept.id })).state, 'active');
+
+  await c1.call('task.complete', { taskId: doomed.id });
+  assert.equal(await c1.call('task.delete', { taskId: doomed.id }), null);
+  assert.ok(!existsSync(join(home, 'tasks', doomed.id)), 'каталог Task удалён');
+  assert.deepEqual((await c1.call('task.list')).map((t: Task) => t.name), ['kept']);
+
+  await c1.call('task.complete', { taskId: kept.id });
+  c1.close();
+  a1.server.close();
+
+  // Срок хранения 0 дней — Agent удаляет завершённую Task при старте.
+  const a2 = await startAgent(home, 0, { engine: echo, completedRetentionDays: 0 });
+  const c2 = client(await connect((a2.server.address() as AddressInfo).port, a1.adminToken!));
+  assert.deepEqual(await c2.call('task.list'), []);
+  assert.ok(!existsSync(join(home, 'tasks', kept.id)));
   c2.close();
   a2.server.close();
 });
