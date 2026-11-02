@@ -15,7 +15,7 @@ const config: { port?: number; defaultPermissionMode?: PermissionMode; completed
   : {};
 const port = config.port ?? 7400;
 
-const { adminToken } = await startAgent(home, port, {
+const { adminToken, stop } = await startAgent(home, port, {
   defaultPermissionMode: config.defaultPermissionMode,
   completedRetentionDays: config.completedRetentionDays,
 });
@@ -23,3 +23,9 @@ console.log(`horizon agent listening on 127.0.0.1:${port}, home ${home}`);
 if (adminToken) {
   console.log(`\nAdmin Access Token (показывается один раз, сохраните его):\n\n  ${adminToken}\n`);
 }
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const)
+  process.on(signal, () => {
+    stop();
+    process.exit(0);
+  });

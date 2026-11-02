@@ -10,6 +10,8 @@ const info: AgentInfo = { version: pkg.version };
 
 export interface StartedAgent {
   server: Server;
+  /** Штатная остановка: закрывает процессы Engine и сервер. */
+  stop(): void;
   /** Access Token первого admin, если Agent Home только что создан. */
   adminToken?: string;
 }
@@ -26,6 +28,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
   const members = new Members(home);
   const tasks = new Tasks(home, opts.engine ?? claudeCode, opts.completedRetentionDays ?? 30);
   tasks.purge();
+  tasks.recover();
   setInterval(() => tasks.purge(), 60 * 60 * 1000).unref();
   const defaultPermissionMode = opts.defaultPermissionMode ?? 'ask';
   const adminToken = members.isEmpty ? members.create('admin', 'admin') : undefined;
@@ -62,7 +65,11 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
     });
   });
 
-  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({ server, adminToken })));
+  const stop = () => {
+    tasks.shutdown();
+    server.close();
+  };
+  return new Promise((resolve) => server.listen(port, '127.0.0.1', () => resolve({ server, adminToken, stop })));
 }
 
 interface Context {

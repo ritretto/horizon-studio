@@ -228,3 +228,51 @@ test('Завершение, переоткрытие, удаление вруч�
   c2.close();
   a2.server.close();
 });
+
+test('После перезапуска Agent прерванные Session продолжаются сами, Task на паузе — нет', async () => {
+  const starts: string[] = [];
+  // «ask» — висит на запросе разрешения, иначе — ход, который не заканчивается.
+  const stuck: Engine = ({ resume, onItem, onEngineSessionId, askPermission }) => {
+    onEngineSessionId(`conv-${starts.length}`);
+    starts.push(`resume=${resume}`);
+    return {
+      send: (text) => {
+        if (text === 'ask') void askPermission({ tool: 'Bash', input: {} });
+        else setImmediate(() => onItem({ kind: 'text', text: `got: ${text.slice(0, 15)}` }));
+      },
+      close: () => {},
+    };
+  };
+  const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
+  const a1 = await startAgent(home, 0, { engine: stuck });
+  const c1 = client(await connect((a1.server.address() as AddressInfo).port, a1.adminToken!));
+  const working: Task = await c1.call('task.create', { name: 'working', permissionMode: 'ask' });
+  const asking: Task = await c1.call('task.create', { name: 'asking', permissionMode: 'ask' });
+  const paused: Task = await c1.call('task.create', { name: 'paused' });
+  await c1.call('session.send', { sessionId: working.sessions[0].id, text: 'делай' });
+  await c1.call('session.send', { sessionId: asking.sessions[0].id, text: 'ask' });
+  await c1.call('session.send', { sessionId: paused.sessions[0].id, text: 'делай' });
+  await c1.call('task.pause', { taskId: paused.id });
+  await new Promise((r) => setTimeout(r, 20));
+  c1.close();
+  a1.server.close(); // «сбой»: процесс Agent пропал посреди ходов
+
+  const a2 = await startAgent(home, 0, { engine: stuck });
+  const c2 = client(await connect((a2.server.address() as AddressInfo).port, a1.adminToken!));
+  await c2.call('session.subscribe', { sessionId: working.sessions[0].id, fromSeq: 2 });
+  const w = await c2.until(3);
+  assert.deepEqual(w[0].item, { kind: 'status', status: 'interrupted' });
+  assert.match((w[1].item as { text: string }).text, /^\[HorizonStudio\] Agent был перезапущен/);
+  assert.deepEqual(w[2].item, { kind: 'text', text: 'got: [HorizonStudio]' });
+
+  await c2.call('session.subscribe', { sessionId: asking.sessions[0].id, fromSeq: 2 });
+  const q = (await c2.until(6)).slice(3);
+  assert.equal(q[0].item.kind, 'permission_answer', 'висевший запрос разрешения снят');
+  assert.deepEqual(q[1].item, { kind: 'status', status: 'interrupted' });
+
+  assert.equal((await c2.call('task.list')).find((t: Task) => t.id === paused.id).state, 'paused');
+  // 3 запуска до перезапуска + по одному на две прерванные Session, все с resume.
+  assert.deepEqual(starts.slice(3).sort(), ['resume=conv-0', 'resume=conv-1']);
+  c2.close();
+  a2.server.close();
+});

@@ -58,7 +58,8 @@ export type SessionItem =
   | { kind: 'permission'; requestId: string; tool: string; input: unknown; reason?: string }
   | { kind: 'permission_answer'; requestId: string; allow: boolean; always: boolean }
   | { kind: 'turn_end'; error?: string }
-  | { kind: 'status'; status: 'paused' | 'resumed' | 'completed' | 'reopened' }
+  /** `interrupted` — Agent перезапустился посреди хода и сам продолжает Session. */
+  | { kind: 'status'; status: 'paused' | 'resumed' | 'completed' | 'reopened' | 'interrupted' }
   | { kind: 'error'; message: string };
 
 /**

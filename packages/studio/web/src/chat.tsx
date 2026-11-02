@@ -138,7 +138,13 @@ function Item({ item, results, answers, onAnswer }: ItemProps) {
   }
 }
 
-const statusLabel = { paused: 'Пауза', resumed: 'Продолжено', completed: 'Завершена', reopened: 'Переоткрыта' };
+const statusLabel = {
+  paused: 'Пауза',
+  resumed: 'Продолжено',
+  completed: 'Завершена',
+  reopened: 'Переоткрыта',
+  interrupted: 'Agent перезапустился — продолжаю с места остановки',
+};
 
 function summary(input: unknown): string {
   const v = input as Record<string, unknown>;

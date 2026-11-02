@@ -16,6 +16,9 @@ interface StoredTask extends Task {
   sessions: StoredSession[];
 }
 
+const RECOVER_PROMPT =
+  '[HorizonStudio] Agent был перезапущен (сбой, перезагрузка или обновление), и твой ход прервался. Проверь состояние (git status, незавершённые команды, lock-файлы), исправь что нужно и продолжай. Если не получается — опиши проблему и спроси пользователя.';
+
 const CONTINUE_PROMPT =
   '[HorizonStudio] Task продолжена после паузы. Твой предыдущий ход был прерван — проверь состояние и продолжай с того места, где остановился.';
 
@@ -98,6 +101,27 @@ export class Tasks {
     return true;
   }
 
+  /** После перезапуска Agent продолжает Session активных Task, прерванные посреди хода. */
+  recover() {
+    for (const task of this.tasks.values()) {
+      if ((task.state ?? 'active') !== 'active') continue;
+      for (const s of task.sessions) {
+        const session = this.load(task, s.id);
+        if (session.interrupted) session.recover();
+      }
+    }
+  }
+
+  /**
+   * Штатная остановка Agent: закрывает процессы Engine, не трогая состояние Task —
+   * прерванные ходы продолжатся при следующем старте (recover).
+   * ponytail: при жёстком сбое (kill -9) процесс Engine живёт ещё несколько секунд и доделывает текущую команду;
+   * если это станет проблемой — запоминать PID через spawnClaudeCodeProcess и добивать при старте.
+   */
+  shutdown() {
+    for (const s of this.sessions.values()) s.stop();
+  }
+
   /** Удаляет завершённые Task, срок хранения которых истёк. */
   purge(now = Date.now()) {
     for (const t of this.tasks.values()) if (t.state === 'completed' && Date.parse(this.public(t).deleteAt!) <= now) this.remove(t);
@@ -178,6 +202,22 @@ export class Session {
     const history = this.history(0);
     this.seq = history.length;
     this.midTurn = history.filter((e) => e.item.kind !== 'status').at(-1)?.item.kind !== 'turn_end' && history.length > 0;
+  }
+
+  /** Ход шёл, когда Agent остановился (по журналу при загрузке). */
+  get interrupted() {
+    return this.midTurn && !this.run;
+  }
+
+  recover() {
+    // Процесса Engine, ждавшего ответа на эти запросы, больше нет.
+    const history = this.history(0);
+    const answered = new Set(history.map((e) => (e.item.kind === 'permission_answer' ? e.item.requestId : '')));
+    for (const { item } of history)
+      if (item.kind === 'permission' && !answered.has(item.requestId))
+        this.append({ kind: 'permission_answer', requestId: item.requestId, allow: false, always: false });
+    this.append({ kind: 'status', status: 'interrupted' });
+    this.send(RECOVER_PROMPT);
   }
 
   /** Отправляет сообщение; false, если Task на паузе или завершена. */

@@ -10,7 +10,7 @@ const modeLabel: Record<PermissionMode, string> = {
   auto: 'всё разрешено',
 };
 
-const statusToState = { paused: 'paused', reopened: 'paused', completed: 'completed', resumed: 'active' } as const;
+const statusToState = { paused: 'paused', reopened: 'paused', completed: 'completed', resumed: 'active', interrupted: 'active' } as const;
 
 const stateLabel: Record<AgentStatus['state'], string> = {
   connecting: 'подключение…',
