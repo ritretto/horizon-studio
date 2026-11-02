@@ -1,12 +1,13 @@
-import { createServer, type Server } from 'node:http';
+import { writeFileSync } from 'node:fs';
+import { createServer, type IncomingMessage, type Server } from 'node:http';
+import { join } from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { AccessLevel, AgentHello, TasksEvent, AgentInfo, PermissionMode, Request, Response } from '@horizon/protocol';
+import { currentVersion, installVersion, lastUpdate, type AgentBuild } from '@horizon/launcher/versions';
 import pkg from '../package.json' with { type: 'json' };
 import { claudeCode, type Engine } from './engine.ts';
 import { Members, type Member } from './members.ts';
 import { Tasks } from './tasks.ts';
-
-const info: AgentInfo = { version: pkg.version };
 
 export interface StartedAgent {
   server: Server;
@@ -22,7 +23,14 @@ export interface AgentOptions {
   defaultPermissionMode?: PermissionMode;
   /** Через сколько дней завершённая Task удаляется безвозвратно. */
   completedRetentionDays?: number;
+  /** id сборки, из которой Agent запущен Launcher'ом. */
+  build?: string;
+  /** Перезапуск через Launcher на новой версии; без Launcher Agent Update невозможен. */
+  restart?: () => void;
 }
+
+const bearer = (req: IncomingMessage) => req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+const httpError = (status: number, message: string) => Object.assign(new Error(message), { status });
 
 export function startAgent(home: string, port: number, opts: AgentOptions = {}): Promise<StartedAgent> {
   const members = new Members(home);
@@ -46,17 +54,39 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
     });
   };
 
+  const info = (): AgentInfo => ({ version: pkg.version, build: opts.build, lastUpdate: lastUpdate(home) });
+
+  /** Agent Update: сборка ставится в versions/, Launcher перезапускает Agent на ней и откатит, если она не поднимется. */
+  async function update(req: IncomingMessage) {
+    const auth = members.authenticate(bearer(req) ?? '');
+    if (auth?.member.accessLevel !== 'admin') throw httpError(403, 'only admin can update Agent');
+    if (!opts.restart) throw httpError(409, 'Agent запущен без Launcher — обновление невозможно');
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    const build = JSON.parse(body) as AgentBuild;
+    if (typeof build?.agent !== 'string' || typeof build.package?.version !== 'string') throw httpError(400, 'invalid build');
+    const id = await installVersion(home, build);
+    if (id === currentVersion(home)) return { status: 'current', build: id };
+    writeFileSync(join(home, 'next'), id);
+    setTimeout(opts.restart, 200); // сначала ответ уходит Studio
+    return { status: 'restarting', build: id };
+  }
+
   const server = createServer((req, res) => {
-    if (req.url === '/health') {
-      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(info));
-      return;
-    }
+    const json = (status: number, body: unknown) =>
+      res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+    if (req.url === '/health') return json(200, info());
+    if (req.url === '/update' && req.method === 'PUT')
+      return void update(req).then(
+        (r) => json(200, r),
+        (e) => json(e.status ?? 500, { error: e.message }),
+      );
     res.writeHead(404).end();
   });
 
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
-    const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+    const token = bearer(req);
     const auth = token && members.authenticate(token);
     if (!auth) {
       socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
@@ -78,7 +108,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
           ws.close(1003, 'invalid JSON');
           return;
         }
-        handle(req, { member, tokenId, members, sockets, engine, tasks, ws, subscriptions, defaultPermissionMode })
+        handle(req, { info, member, tokenId, members, sockets, engine, tasks, ws, subscriptions, defaultPermissionMode })
           .catch((e): Response => ({ type: 'response', id: req.id, error: { message: e instanceof Error ? e.message : String(e) } }))
           .then((res) => ws.send(JSON.stringify(res)));
       });
@@ -93,6 +123,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
 }
 
 interface Context {
+  info: () => AgentInfo;
   member: Member;
   tokenId: string;
   members: Members;
@@ -107,7 +138,7 @@ interface Context {
 const permissionModes: PermissionMode[] = ['ask', 'auto'];
 const accessLevels: AccessLevel[] = ['admin', 'user'];
 
-async function handle(req: Request, { member, tokenId, members, sockets, engine, tasks, ws, subscriptions, defaultPermissionMode }: Context): Promise<Response> {
+async function handle(req: Request, { info, member, tokenId, members, sockets, engine, tasks, ws, subscriptions, defaultPermissionMode }: Context): Promise<Response> {
   const ok = (result: unknown): Response => ({ type: 'response', id: req.id, result });
   const fail = (message: string): Response => ({ type: 'response', id: req.id, error: { message } });
   const p = (req.params ?? {}) as Record<string, any>;
@@ -133,7 +164,7 @@ async function handle(req: Request, { member, tokenId, members, sockets, engine,
     }
     case 'agent.info': {
       const result: AgentHello = {
-        ...info,
+        ...info(),
         member: { id: member.id, name: member.name, accessLevel: member.accessLevel, tokenId },
         engines: [{ id: 'claude-code', status: (await engine.status?.()) ?? 'ready' }],
       };

@@ -24,6 +24,8 @@ export class AgentLink {
   private onEvent: (e: SessionEvent | TasksEvent) => void;
   private knownHosts: string;
   private tunnel?: Tunnel;
+  /** Локальный порт, по которому сейчас доступен Agent (свой или туннеля). */
+  private port = 0;
 
   constructor(connection: Connection, knownHosts: string, onChange: () => void, onEvent: (e: SessionEvent | TasksEvent) => void) {
     this.connection = connection;
@@ -42,6 +44,18 @@ export class AgentLink {
     }
     this.ws.send(JSON.stringify({ type: 'request', id, method, params }));
     return new Promise((resolve) => this.pending.set(id, resolve));
+  }
+
+  /** Agent Update: отправляет сборку на `PUT /update` Agent. */
+  async update(build: string): Promise<{ result: unknown } | { error: { message: string } }> {
+    if (this.status.state !== 'online') return { error: { message: `agent is ${this.status.state}` } };
+    const res = await fetch(`http://127.0.0.1:${this.port}/update`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${this.connection.token}`, 'content-type': 'application/json' },
+      body: build,
+    });
+    const body = await res.json();
+    return res.ok ? { result: body } : { error: { message: body.error } };
   }
 
   close() {
@@ -67,6 +81,7 @@ export class AgentLink {
       if (this.closed) return this.tunnel.close();
       port = this.tunnel.port;
     }
+    this.port = port;
     const ws = new WebSocket(`ws://127.0.0.1:${port}`, {
       headers: { authorization: `Bearer ${this.connection.token}` },
     });

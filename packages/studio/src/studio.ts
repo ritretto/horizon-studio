@@ -10,6 +10,8 @@ import { AgentLink, type Connection } from './agent-link.ts';
 
 // И из src/, и из dist/ это указывает на dist/web.
 const webRoot = fileURLToPath(new URL('../dist/web/', import.meta.url));
+/** Локальная сборка Agent для Agent Update (`npm run build -w @horizon/agent`). */
+const agentBuild = fileURLToPath(new URL('../../agent/dist/', import.meta.url));
 const types: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript',
@@ -53,6 +55,18 @@ export function startStudio(configFile: string, port: number): Promise<Server> {
         link(c);
         broadcast();
         return { type: 'response', id: req.id, result: { id: c.id } };
+      }
+      case 'connection.update': {
+        const agent = links.get((req.params as { id: string }).id);
+        if (!agent) return { type: 'response', id: req.id, error: { message: 'unknown agent' } };
+        let build: string;
+        try {
+          const pkg = JSON.parse(await readFile(join(agentBuild, 'package.json'), 'utf8'));
+          build = JSON.stringify({ package: pkg, agent: await readFile(join(agentBuild, 'agent.mjs'), 'utf8') });
+        } catch {
+          return { type: 'response', id: req.id, error: { message: `нет сборки Agent в ${agentBuild}: npm run build` } };
+        }
+        return { type: 'response', id: req.id, ...(await agent.update(build)) };
       }
       case 'connection.remove': {
         const { id } = req.params as { id: string };

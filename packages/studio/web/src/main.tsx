@@ -36,6 +36,20 @@ function App() {
   const [membersOf, setMembersOf] = useState<string>();
   const membersAgent = agents.find((a) => a.id === membersOf && a.hello?.member.accessLevel === 'admin');
   const [error, setError] = useState('');
+  /** Ход Agent Update по Agent; `pending` — сборка, результат которой ждём от Agent. */
+  const [updating, setUpdating] = useState<Record<string, { text: string; pending?: string }>>({});
+
+  async function updateAgent(agentId: string) {
+    setUpdating((u) => ({ ...u, [agentId]: { text: 'Загрузка сборки и установка зависимостей…' } }));
+    const res = await request('connection.update', { id: agentId });
+    const r = 'result' in res ? (res.result as { status: 'current' | 'restarting'; build: string }) : undefined;
+    const next = !r
+      ? { text: `Ошибка: ${'error' in res ? res.error.message : ''}` }
+      : r.status === 'current'
+        ? { text: `Уже работает ${r.build}` }
+        : { text: `Перезапуск на ${r.build}…`, pending: r.build };
+    setUpdating((u) => ({ ...u, [agentId]: next }));
+  }
 
   const online = agents.filter((a) => a.state === 'online').map((a) => a.id).join();
   const loadTasks = async (agentId: string) => {
@@ -159,7 +173,7 @@ function App() {
             <div className="agent-head">
               <span className={`dot ${a.state}`} />
               <strong>{a.name}</strong>
-              <span className="muted" title={a.hello ? `v${a.hello.version} · ${a.hello.member.name}` : undefined}>
+              <span className="muted" title={a.hello ? `${a.hello.build ?? a.hello.version} · ${a.hello.member.name}` : undefined}>
                 {a.hello ? `v${a.hello.version} · ${a.hello.member.name}` : stateLabel[a.state]}
               </span>
               {a.hello?.member.accessLevel === 'admin' && (
@@ -178,6 +192,25 @@ function App() {
               </p>
             )}
             {a.error && <p className="warn">{a.error}</p>}
+            {a.hello?.member.accessLevel === 'admin' && a.hello.build && (
+              <p className="muted">
+                Сборка {a.hello.build}{' '}
+                <button className="link" title="Загрузить локальную сборку Agent" onClick={() => updateAgent(a.id)}>
+                  Обновить
+                </button>
+              </p>
+            )}
+            {updating[a.id] && !(updating[a.id].pending && a.hello?.lastUpdate?.version === updating[a.id].pending) && (
+              <p className="muted">{updating[a.id].text}</p>
+            )}
+            {a.hello?.lastUpdate && (
+              <p className={a.hello.lastUpdate.ok ? 'muted' : 'warn'}>
+                {a.hello.lastUpdate.ok
+                  ? `Обновлено до ${a.hello.lastUpdate.version}`
+                  : `Обновление до ${a.hello.lastUpdate.version} не удалось: ${a.hello.lastUpdate.error}; откат на прежнюю версию`}{' '}
+                ({new Date(a.hello.lastUpdate.at).toLocaleString()})
+              </p>
+            )}
             {a.state === 'online' &&
               a.hello?.engines.map((e) => (
                 <p key={e.id} className={e.status === 'ready' ? 'muted' : 'warn'}>

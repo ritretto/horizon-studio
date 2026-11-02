@@ -4,6 +4,17 @@ export type AccessLevel = 'admin' | 'user';
 
 export interface AgentInfo {
   version: string;
+  /** id установленной сборки (`<версия>-<хэш>`); нет — Agent запущен не из Launcher. */
+  build?: string;
+  lastUpdate?: UpdateResult;
+}
+
+/** Результат последнего Agent Update. */
+export interface UpdateResult {
+  version: string;
+  ok: boolean;
+  error?: string;
+  at: string;
 }
 
 /** Отдаётся методом `agent.info`: Agent и Member, от имени которого открыто соединение. */

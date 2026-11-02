@@ -327,3 +327,36 @@ test('Member: admin создаёт user и токены, user видит тол�
   admin.close();
   a.stop();
 });
+
+test('Agent Update: PUT /update ставит сборку и просит Launcher перезапустить; только admin и только под Launcher', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
+  let restarts = 0;
+  const a = await startAgent(home, 0, { engine: echo, restart: () => restarts++ });
+  const url = `http://127.0.0.1:${(a.server.address() as AddressInfo).port}/update`;
+  const build = JSON.stringify({ package: { version: '9.9.9' }, agent: 'console.log("new")' });
+  const put = (token: string) => fetch(url, { method: 'PUT', headers: { authorization: `Bearer ${token}` }, body: build });
+
+  const admin = client(await connect((a.server.address() as AddressInfo).port, a.adminToken!));
+  const { token: userToken } = await admin.call('member.create', { name: 'u', accessLevel: 'user' });
+  admin.close();
+  assert.equal((await put(userToken)).status, 403);
+
+  const res = await put(a.adminToken!);
+  const body = await res.json();
+  assert.equal(body.status, 'restarting');
+  assert.match(body.build, /^9\.9\.9-[0-9a-f]{8}$/);
+  assert.equal(readFileSync(join(home, 'next'), 'utf8'), body.build);
+  assert.equal(readFileSync(join(home, 'versions', body.build, 'agent.mjs'), 'utf8'), 'console.log("new")');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(restarts, 1);
+  a.stop();
+
+  const plain = await startAgent(mkdtempSync(join(tmpdir(), 'horizon-agent-')), 0, { engine: echo });
+  const r = await fetch(`http://127.0.0.1:${(plain.server.address() as AddressInfo).port}/update`, {
+    method: 'PUT',
+    headers: { authorization: `Bearer ${plain.adminToken}` },
+    body: build,
+  });
+  assert.equal(r.status, 409, 'без Launcher обновление невозможно');
+  plain.stop();
+});
