@@ -62,6 +62,7 @@ function run() {
     const proc = spawn(process.execPath, [join(home, 'versions', version, 'agent.mjs'), '--home', home], {
       stdio: ['ignore', log, log],
       env: { ...process.env, HORIZON_LAUNCHER: '1' },
+      windowsHide: true, // Launcher без консоли — иначе на Windows Agent получает своё видимое окно
     });
     child = proc;
 
