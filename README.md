@@ -9,6 +9,70 @@
 - `studio` — веб-сервер и фронт; подключение к Agent'ам, Task, чат с Session, обновление Agent.
 - `protocol` — общие типы сообщений.
 
+## Установка
+
+На каждой машине с Agent и на машине со Studio нужны Node.js 22.18+ и git. Сборка одинакова для всех ОС:
+
+```sh
+git clone https://github.com/sergey-orekhov/horizon-studio.git
+cd horizon-studio
+npm ci
+npm run build
+```
+
+На машине с Agent должен быть выполнен вход в Claude Code под тем пользователем, от которого будет работать Agent: установите [Claude Code](https://code.claude.com/docs/en/setup), запустите `claude` и войдите (`/login`). Agent использует эти учётные данные; при входе по подписке Claude его работа расходует лимиты подписки.
+
+Agent устанавливается как пользовательский сервис без прав администратора. Команду `install` выполняйте от того пользователя, под которым будет работать Agent, из каталога репозитория. При первой установке она печатает **Access Token admin** — сохраните его, повторно он не показывается. Проверка работы на любой ОС: `curl http://127.0.0.1:7400/health`.
+
+### macOS
+
+```sh
+node packages/launcher/dist/launcher.mjs install
+```
+
+- Agent регистрируется как LaunchAgent `dev.horizon.agent`: стартует при входе пользователя в систему и перезапускается при падении. На выделенной машине включите автоматический вход (Системные настройки → Пользователи и группы), иначе после перезагрузки Agent не запустится до входа.
+- Состояние: `launchctl print gui/$(id -u)/dev.horizon.agent`. Лог: `~/.horizon-agent/agent.log`.
+- Для подключения с другой машины включите SSH: Системные настройки → Основные → Общий доступ → Удалённый вход.
+- Удаление: `node packages/launcher/dist/launcher.mjs uninstall`.
+
+### Linux
+
+```sh
+node packages/launcher/dist/launcher.mjs install
+```
+
+- Agent регистрируется как сервис `systemd --user` `horizon-agent`, а `install` включает `loginctl enable-linger`: Agent стартует при загрузке машины без входа пользователя и перезапускается при падении. Нужен дистрибутив с systemd.
+- Состояние: `systemctl --user status horizon-agent`. Лог: `~/.horizon-agent/agent.log`.
+- Для подключения с другой машины нужен запущенный `sshd` с разрешённым пробросом портов (`AllowTcpForwarding yes`, по умолчанию так и есть).
+- Удаление: `node packages/launcher/dist/launcher.mjs uninstall`.
+
+### Windows
+
+В PowerShell:
+
+```powershell
+node packages\launcher\dist\launcher.mjs install
+```
+
+- Agent добавляется в автозапуск при входе пользователя (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, значение `HorizonAgent`) и работает в фоне без окна. На выделенной машине включите автоматический вход. Падения Agent Launcher обрабатывает сам, но если упадёт сам Launcher, он не перезапустится до следующего входа.
+- Состояние: `reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v HorizonAgent`. Лог: `%USERPROFILE%\.horizon-agent\agent.log`.
+- Для подключения с другой машины установите и запустите OpenSSH Server (PowerShell от администратора):
+  ```powershell
+  Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+  Set-Service sshd -StartupType Automatic; Start-Service sshd
+  ```
+- Удаление: `node packages\launcher\dist\launcher.mjs uninstall`.
+
+### Studio
+
+```sh
+node packages/studio/dist/server.mjs
+```
+
+Откройте http://127.0.0.1:7300 и добавьте Connection: название, порт Agent (7400) и Access Token; для удалённого Agent — ещё хост, пользователь и при необходимости ключ в блоке SSH. Для удалённых Agent нужен SSH-клиент `ssh` в PATH: на macOS и Linux он обычно есть, на Windows 10/11 встроен. Ключ должен быть без пароля или загружен в ssh-agent.
+
+Studio запускается вручную (терминал, tmux, свой сервис) — установки как сервиса у неё пока нет.
+
 ## Разработка
 
 Требуется Node.js 22.18+.
