@@ -2,11 +2,12 @@ import { writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { join } from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { AccessLevel, AgentHello, TasksEvent, AgentInfo, PermissionMode, Request, Response } from '@horizon/protocol';
+import type { AccessLevel, AgentHello, TasksEvent, AgentInfo, EngineId, PermissionMode, Request, Response } from '@horizon/protocol';
 import { currentVersion, installVersion, lastUpdate, type AgentBuild } from '@horizon/launcher/versions';
 import pkg from '../package.json' with { type: 'json' };
 import { claudeCode, type Engine } from './engine.ts';
 import { Members, type Member } from './members.ts';
+import { codex } from './codex.ts';
 import { Tasks } from './tasks.ts';
 
 export interface StartedAgent {
@@ -19,6 +20,7 @@ export interface StartedAgent {
 
 export interface AgentOptions {
   engine?: Engine;
+  codexEngine?: Engine;
   /** Permission Mode для новых Task, если он не указан явно (из конфига Agent). */
   defaultPermissionMode?: PermissionMode;
   /** Через сколько дней завершённая Task удаляется безвозвратно. */
@@ -34,8 +36,9 @@ const httpError = (status: number, message: string) => Object.assign(new Error(m
 
 export function startAgent(home: string, port: number, opts: AgentOptions = {}): Promise<StartedAgent> {
   const members = new Members(home);
-  const engine = opts.engine ?? claudeCode;
-  const tasks = new Tasks(home, engine, opts.completedRetentionDays ?? 30);
+  const engines = new Map<EngineId, Engine>([['claude-code', opts.engine ?? claudeCode]]);
+  if (!opts.engine || opts.codexEngine) engines.set('codex', opts.codexEngine ?? codex);
+  const tasks = new Tasks(home, engines, opts.completedRetentionDays ?? 30);
   tasks.purge();
   tasks.recover();
   setInterval(() => tasks.purge(), 60 * 60 * 1000).unref();
@@ -108,7 +111,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
           ws.close(1003, 'invalid JSON');
           return;
         }
-        handle(req, { info, member, tokenId, members, sockets, engine, tasks, ws, subscriptions, defaultPermissionMode })
+        handle(req, { info, member, tokenId, members, sockets, engines, tasks, ws, subscriptions, defaultPermissionMode })
           .catch((e): Response => ({ type: 'response', id: req.id, error: { message: e instanceof Error ? e.message : String(e) } }))
           .then((res) => ws.send(JSON.stringify(res)));
       });
@@ -128,7 +131,7 @@ interface Context {
   tokenId: string;
   members: Members;
   sockets: Map<WebSocket, { member: Member; tokenId: string }>;
-  engine: Engine;
+  engines: Map<EngineId, Engine>;
   tasks: Tasks;
   ws: WebSocket;
   subscriptions: Map<string, () => void>;
@@ -138,7 +141,7 @@ interface Context {
 const permissionModes: PermissionMode[] = ['ask', 'auto'];
 const accessLevels: AccessLevel[] = ['admin', 'user'];
 
-async function handle(req: Request, { info, member, tokenId, members, sockets, engine, tasks, ws, subscriptions, defaultPermissionMode }: Context): Promise<Response> {
+async function handle(req: Request, { info, member, tokenId, members, sockets, engines, tasks, ws, subscriptions, defaultPermissionMode }: Context): Promise<Response> {
   const ok = (result: unknown): Response => ({ type: 'response', id: req.id, result });
   const fail = (message: string): Response => ({ type: 'response', id: req.id, error: { message } });
   const p = (req.params ?? {}) as Record<string, any>;
@@ -166,14 +169,19 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
       const result: AgentHello = {
         ...info(),
         member: { id: member.id, name: member.name, accessLevel: member.accessLevel, tokenId },
-        engines: [{ id: 'claude-code', status: (await engine.status?.()) ?? 'ready' }],
+        engines: await Promise.all([...engines].map(async ([id, engine]) => ({
+          id, status: (await engine.status?.()) ?? 'ready',
+        }))),
       };
       return ok(result);
     }
-    case 'task.create':
+    case 'task.create': {
       if (typeof p.name !== 'string' || !p.name.trim()) return fail('name is required');
       if (p.permissionMode !== undefined && !permissionModes.includes(p.permissionMode)) return fail('invalid permissionMode');
-      return ok(tasks.create(p.name.trim(), member, p.permissionMode ?? defaultPermissionMode));
+      const engine = p.engine === undefined ? 'claude-code' : p.engine;
+      if (!engines.has(engine)) return fail('unknown engine');
+      return ok(tasks.create(p.name.trim(), member, p.permissionMode ?? defaultPermissionMode, engine));
+    }
     case 'task.list':
       return ok(tasks.list(member));
     case 'task.pause':

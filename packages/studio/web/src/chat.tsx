@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import type { SessionItem, StudioSessionEvent, TaskState } from '@horizon/protocol';
+import type { EngineId, SessionItem, StudioSessionEvent, TaskState } from '@horizon/protocol';
 
 type ToolResult = Extract<SessionItem, { kind: 'tool_result' }>;
 type Answer = Extract<SessionItem, { kind: 'permission_answer' }>;
@@ -8,11 +8,13 @@ export type OnAnswer = (requestId: string, allow: boolean, always: boolean) => v
 interface Props {
   events: StudioSessionEvent[];
   state: TaskState;
-  onSend(text: string): void;
+  engine: EngineId;
+  engineName: string;
+  onSend(text: string): Promise<boolean>;
   onAnswer: OnAnswer;
 }
 
-export function Chat({ events, state, onSend, onAnswer }: Props) {
+export function Chat({ events, state, engine, engineName, onSend, onAnswer }: Props) {
   const stopped = state !== 'active';
   const [text, setText] = useState('');
   const end = useRef<HTMLDivElement>(null);
@@ -26,31 +28,41 @@ export function Chat({ events, state, onSend, onAnswer }: Props) {
   const last = events.filter((e) => e.item.kind !== 'status').at(-1);
   const busy = !stopped && !!last && last.item.kind !== 'turn_end';
 
+  const inputDisabled = stopped || (engine === 'codex' && busy);
+  const display: { seq: number; item: SessionItem }[] = [];
+  for (const { seq, item } of events) {
+    const previous = display.at(-1)?.item;
+    if (item.kind === 'text_delta' && previous?.kind === 'text_delta' && previous.id === item.id) {
+      previous.text += item.text;
+    } else {
+      display.push({ seq, item: item.kind === 'text_delta' ? { ...item } : item });
+    }
+  }
+
   // Без фигурных скобок нельзя: в новых браузерах scrollIntoView возвращает Promise, а React примет его за cleanup.
   useEffect(() => {
     end.current?.scrollIntoView({ block: 'end' });
   }, [events.length]);
 
-  function submit(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault();
-    if (!text.trim()) return;
-    onSend(text);
-    setText('');
+    if (inputDisabled || !text.trim()) return;
+    if (await onSend(text)) setText((current) => current === text ? '' : current);
   }
 
   return (
     <section className="chat">
       <div className="items">
         {events.length === 0 && <p className="muted">Напишите, что нужно сделать.</p>}
-        {events.map((e) => (
-          <Item key={e.seq} item={e.item} results={results} answers={answers} onAnswer={onAnswer} />
+        {display.map((e) => (
+          <Item key={e.seq} item={e.item} results={results} answers={answers} engineName={engineName} onAnswer={onAnswer} />
         ))}
         {stopped ? (
           <p className="muted">{state === 'paused' ? 'Task на паузе' : 'Task завершена'}</p>
         ) : waiting ? (
           <p className="warn">Ждёт вашего решения</p>
         ) : (
-          busy && <p className="muted">Claude работает…</p>
+          busy && <p className="muted">{engineName} работает…</p>
         )}
         <div ref={end} />
       </div>
@@ -66,10 +78,10 @@ export function Chat({ events, state, onSend, onAnswer }: Props) {
                 ? 'Task завершена — переоткройте, чтобы продолжить'
                 : 'Сообщение (⌘/Ctrl+Enter — отправить)'
           }
-          disabled={stopped}
+          disabled={inputDisabled}
           rows={3}
         />
-        <button disabled={stopped}>Отправить</button>
+        <button disabled={inputDisabled}>Отправить</button>
       </form>
     </section>
   );
@@ -79,13 +91,15 @@ interface ItemProps {
   item: SessionItem;
   results: Map<string, ToolResult>;
   answers: Map<string, Answer>;
+  engineName: string;
   onAnswer: OnAnswer;
 }
 
-function Item({ item, results, answers, onAnswer }: ItemProps) {
+function Item({ item, results, answers, engineName, onAnswer }: ItemProps) {
   switch (item.kind) {
     case 'user':
       return <div className="msg user">{item.text}</div>;
+    case 'text_delta':
     case 'text':
       return <div className="msg">{item.text}</div>;
     case 'tool': {
@@ -105,7 +119,7 @@ function Item({ item, results, answers, onAnswer }: ItemProps) {
       return (
         <div className="permission">
           <div>
-            Claude хочет выполнить <strong>{item.tool}</strong> <span className="muted">{summary(item.input)}</span>
+            {engineName} хочет выполнить <strong>{item.tool}</strong> <span className="muted">{summary(item.input)}</span>
           </div>
           {item.reason && <div className="muted">{item.reason}</div>}
           <details>

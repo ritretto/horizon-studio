@@ -1,6 +1,6 @@
 import { StrictMode, useEffect, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { AgentStatus, EngineStatus, PermissionMode, Task, TaskState } from '@horizon/protocol';
+import type { AgentStatus, EngineId, EngineStatus, PermissionMode, Task, TaskState } from '@horizon/protocol';
 import { useStudio } from './studio.ts';
 import { Chat } from './chat.tsx';
 import { Members } from './members.tsx';
@@ -20,10 +20,13 @@ const stateLabel: Record<AgentStatus['state'], string> = {
   unauthorized: 'неверный токен',
 };
 
+const engineName: Record<EngineId, string> = { 'claude-code': 'Claude Code', codex: 'OpenAI Codex' };
+
 const engineLabel: Record<EngineStatus, string> = {
   ready: 'готов',
   'not installed': 'не установлен',
-  'no credentials': 'нет учётных данных — войдите в Claude Code на машине Agent',
+  'no credentials': 'нет учётных данных',
+  unavailable: 'не удалось запустить',
 };
 
 const completedLast = (a: Task, b: Task) => Number(a.state === 'completed') - Number(b.state === 'completed');
@@ -64,7 +67,11 @@ function App() {
   const allTasks = onlineAgents
     .flatMap((agent) => (tasks[agent.id] ?? []).map((task) => ({ agent, task })))
     .sort((a, b) => completedLast(a.task, b.task) || a.task.createdAt.localeCompare(b.task.createdAt));
-  const readyAgents = onlineAgents.filter((a) => a.hello?.engines.some((e) => e.status === 'ready'));
+  const engineChoices = onlineAgents.flatMap((agent) =>
+    (agent.hello?.engines ?? []).filter((e) => e.status === 'ready').map((e) => ({
+      key: JSON.stringify([agent.id, e.id]), agentId: agent.id, agentName: agent.name, engine: e.id,
+    })),
+  );
 
   // Подписка на Session выбранной Task; после переподключения Agent — заново, с последнего seq.
   const sessionId = task?.sessions[0].id;
@@ -80,8 +87,10 @@ function App() {
     e.preventDefault();
     const form = e.currentTarget;
     const data = new FormData(form);
-    const agentId = String(data.get('agentId') ?? readyAgents[0].id);
-    const res = await request('task.create', { name: data.get('name'), permissionMode: data.get('permissionMode') || undefined }, agentId);
+    const selection = engineChoices.find((choice) => choice.key === data.get('engineChoice'));
+    if (!selection) return;
+    const { agentId, engine } = selection;
+    const res = await request('task.create', { name: data.get('name'), engine, permissionMode: data.get('permissionMode') || undefined }, agentId);
     if ('error' in res) return setError(res.error.message);
     form.reset();
     await loadTasks(agentId); // чтобы Task была в списке сразу, не дожидаясь события
@@ -147,21 +156,19 @@ function App() {
             </li>
           ))}
         </ul>
-        {readyAgents.length > 0 && (
+        {engineChoices.length > 0 && (
           <form className="new-task" onSubmit={createTask}>
             <div>
               <input name="name" placeholder="Новая Task" required />
               <button>+</button>
             </div>
-            {readyAgents.length > 1 && (
-              <select name="agentId" aria-label="Agent">
-                {readyAgents.map((a) => (
-                  <option key={a.id} value={a.id}>
-                    на {a.name}
-                  </option>
-                ))}
-              </select>
-            )}
+            <select name="engineChoice" aria-label="Движок и Agent">
+              {engineChoices.map(({ key, agentName, engine }) => (
+                <option key={key} value={key}>
+                  {engineName[engine]} · {agentName}
+                </option>
+              ))}
+            </select>
             <select name="permissionMode" aria-label="Permission Mode" defaultValue="">
               <option value="">Разрешения: по умолчанию Agent</option>
               <option value="ask">Спрашивать разрешения</option>
@@ -217,7 +224,8 @@ function App() {
             {a.state === 'online' &&
               a.hello?.engines.map((e) => (
                 <p key={e.id} className={e.status === 'ready' ? 'muted' : 'warn'}>
-                  Claude Code: {engineLabel[e.status]}
+                  {engineName[e.id]}: {engineLabel[e.status]}
+                  {e.status === 'no credentials' && (e.id === 'codex' ? ' · codex login на машине Agent' : ' · войдите в Claude Code на машине Agent')}
                 </p>
               ))}
           </div>
@@ -253,7 +261,7 @@ function App() {
           <>
             <header className="task-head">
               <h2>
-                {task.name} <span className={`mode ${task.permissionMode}`}>{modeLabel[task.permissionMode]}</span>
+                {task.name} · {engineName[task.engine]} <span className={`mode ${task.permissionMode}`}>{modeLabel[task.permissionMode]}</span>
               </h2>
               {agentOnline && (
                 <div className="task-actions">
@@ -279,7 +287,16 @@ function App() {
             <Chat
               events={events[sessionId] ?? []}
               state={state ?? 'active'}
-              onSend={(text) => request('session.send', { sessionId, text }, selected.agentId)}
+              engine={task.engine}
+              engineName={engineName[task.engine]}
+              onSend={async (text) => {
+                const res = await request('session.send', { sessionId, text }, selected.agentId);
+                if ('error' in res) {
+                  setError(res.error.message);
+                  return false;
+                }
+                return true;
+              }}
               onAnswer={(requestId, allow, always) =>
                 request('session.answer', { sessionId, requestId, allow, always }, selected.agentId)
               }

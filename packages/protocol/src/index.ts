@@ -46,8 +46,8 @@ export type Response =
 
 // --- Task и Session ---
 
-export type EngineId = 'claude-code';
-export type EngineStatus = 'ready' | 'not installed' | 'no credentials';
+export type EngineId = 'claude-code' | 'codex';
+export type EngineStatus = 'ready' | 'not installed' | 'no credentials' | 'unavailable';
 
 /** `ask` — каждый запрос разрешения ждёт ответа пользователя (Session в Waiting); `auto` — всё разрешается. */
 export type PermissionMode = 'ask' | 'auto';
@@ -76,6 +76,7 @@ export interface Task {
 export type SessionItem =
   | { kind: 'user'; text: string }
   | { kind: 'text'; text: string }
+  | { kind: 'text_delta'; id: string; text: string }
   | { kind: 'tool'; id: string; name: string; input: unknown }
   | { kind: 'tool_result'; id: string; output: string; isError: boolean }
   | { kind: 'permission'; requestId: string; tool: string; input: unknown; reason?: string }

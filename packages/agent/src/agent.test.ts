@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,6 +9,7 @@ import WebSocket from 'ws';
 import type { SessionEvent, Task } from '@horizon/protocol';
 import { startAgent } from './agent.ts';
 import type { Engine } from './engine.ts';
+import { createCodexEngine } from './codex.ts';
 
 function connect(port: number, token: string) {
   return new Promise<WebSocket>((resolve, reject) => {
@@ -359,4 +361,101 @@ test('Agent Update: PUT /update ставит сборку и просит Launch
   });
   assert.equal(r.status, 409, 'без Launcher обновление невозможно');
   plain.stop();
+});
+
+test('Codex: выбор движка, поток событий, разрешения и продолжение после перезапуска', { timeout: 15_000 }, async (t) => {
+  const script = `
+    const { createInterface } = require('node:readline');
+    const assert = require('node:assert/strict');
+    const write = (message) => console.log(JSON.stringify(message));
+    const notify = (method, params) => write({ method, params });
+    let initialized = false;
+    let resumed = false;
+    createInterface({ input: process.stdin }).on('line', (line) => {
+      const { id, method, params, result } = JSON.parse(line);
+      const reply = (result) => write({ id, result });
+      switch (method) {
+        case 'initialize':
+          assert.equal(params.clientInfo.name, 'horizon_studio');
+          return reply({});
+        case 'initialized':
+          initialized = true;
+          return;
+        case 'account/read':
+          assert.equal(initialized, true);
+          return reply({ account: { type: 'chatgpt' }, requiresOpenaiAuth: true });
+        case 'thread/resume':
+          assert.equal(params.threadId, 'codex-thread');
+          resumed = true;
+        case 'thread/start':
+          assert.equal(initialized, true);
+          assert.equal(params.approvalPolicy, 'on-request');
+          assert.equal(params.sandbox, 'workspace-write');
+          return reply({ thread: { id: 'codex-thread' } });
+        case 'turn/start':
+          assert.equal(params.threadId, 'codex-thread');
+          reply({ turn: { id: 'turn' } });
+          if (resumed) {
+            notify('item/agentMessage/delta', { itemId: 'answer2', delta: 'resumed' });
+            return notify('turn/completed', { turn: { status: 'completed' } });
+          }
+          notify('item/started', { item: { type: 'commandExecution', id: 'tool', command: 'ls' } });
+          return write({ id: 'approval', method: 'item/commandExecution/requestApproval', params: {
+            itemId: 'tool', availableDecisions: ['accept', 'acceptForSession', 'decline'],
+          } });
+        default:
+          assert.equal(id, 'approval');
+          notify('item/completed', { item: { type: 'commandExecution', id: 'tool', status: 'completed', exitCode: 0 } });
+          notify('item/agentMessage/delta', { itemId: 'answer', delta: result.decision });
+          notify('item/completed', { item: { type: 'agentMessage', id: 'answer', text: result.decision } });
+          return notify('turn/completed', { turn: { status: 'completed' } });
+      }
+    });
+  `;
+  const codexEngine = createCodexEngine((cwd) => spawn(process.execPath, ['-e', script], { cwd }));
+  const home = mkdtempSync(join(tmpdir(), 'horizon-codex-test-'));
+  const a1 = await startAgent(home, 0, { engine: echo, codexEngine });
+  t.after(() => a1.stop());
+  const token = a1.adminToken!;
+  const c1 = client(await connect((a1.server.address() as AddressInfo).port, token));
+  t.after(() => c1.close());
+  assert.deepEqual((await c1.call('agent.info')).engines, [
+    { id: 'claude-code', status: 'ready' }, { id: 'codex', status: 'ready' },
+  ]);
+  assert.equal((await c1.call('task.create', { name: 'default' })).engine, 'claude-code');
+  assert.equal(await c1.call('task.create', { name: 'invalid', engine: 'invalid' }), undefined);
+  const task: Task = await c1.call('task.create', { name: 'Codex', engine: 'codex', permissionMode: 'ask' });
+  assert.equal(task.engine, 'codex');
+  const sessionId = task.sessions[0].id;
+  await c1.call('session.subscribe', { sessionId });
+  await c1.call('session.send', { sessionId, text: 'first' });
+  const events = await c1.until(3);
+  const permission = events[2].item;
+  assert.equal(permission.kind, 'permission');
+  assert.equal(await c1.call('session.send', { sessionId, text: 'while busy' }), undefined);
+  await c1.call('session.answer', { sessionId, requestId: permission.requestId, allow: true, always: true });
+  await c1.until(7);
+  assert.deepEqual(events.map(({ item }) => item.kind),
+    ['user', 'tool', 'permission', 'permission_answer', 'tool_result', 'text_delta', 'turn_end']);
+  assert.deepEqual(events[5].item, { kind: 'text_delta', id: 'answer', text: 'acceptForSession' });
+  await c1.call('session.send', { sessionId, text: 'second' });
+  await c1.until(10);
+  const nextPermission = events[9].item;
+  assert.equal(nextPermission.kind, 'permission');
+  await c1.call('session.answer', { sessionId, requestId: nextPermission.requestId, allow: false });
+  await c1.until(14);
+  assert.deepEqual(events[12].item, { kind: 'text_delta', id: 'answer', text: 'decline' });
+  c1.close();
+  a1.stop();
+
+  const a2 = await startAgent(home, 0, { engine: echo, codexEngine });
+  t.after(() => a2.stop());
+  const c2 = client(await connect((a2.server.address() as AddressInfo).port, token));
+  t.after(() => c2.close());
+  assert.equal((await c2.call('task.list')).find((entry: Task) => entry.id === task.id).engine, 'codex');
+  await c2.call('session.subscribe', { sessionId, fromSeq: 14 });
+  await c2.call('session.send', { sessionId, text: 'second' });
+  const resumed = await c2.until(3);
+  assert.deepEqual(resumed[1].item, { kind: 'text_delta', id: 'answer2', text: 'resumed' });
+  assert.deepEqual(resumed[2].item, { kind: 'turn_end' });
 });
