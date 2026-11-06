@@ -7,7 +7,7 @@ export interface Member {
   id: string;
   name: string;
   accessLevel: AccessLevel;
-  /** sha256 от Access Token; сами токены не хранятся. */
+  /** sha256 of the Access Token; the tokens themselves are not stored. */
   tokens: { id: string; hash: string; createdAt: string }[];
 }
 
@@ -35,14 +35,14 @@ export class Members {
     }));
   }
 
-  /** Создаёт Member и возвращает его первый Access Token (показывается один раз). */
+  /** Creates a Member and returns their first Access Token (shown once). */
   create(name: string, accessLevel: AccessLevel): { id: string; token: string } {
     const member: Member = { id: randomUUID(), name, accessLevel, tokens: [] };
     this.members.push(member);
     return { id: member.id, token: this.issue(member.id)! };
   }
 
-  /** Новый Access Token для Member (показывается один раз). */
+  /** New Access Token for a Member (shown once). */
   issue(memberId: string): string | undefined {
     const member = this.members.find((m) => m.id === memberId);
     if (!member) return;
@@ -52,12 +52,12 @@ export class Members {
     return token;
   }
 
-  /** Отзывает токен; последний токен admin отозвать нельзя — иначе к Agent больше никто не подключится как admin. */
+  /** Revokes a token. The last admin token cannot be revoked; otherwise nobody could connect to the Agent as admin. */
   revoke(memberId: string, tokenId: string): string | undefined {
     const member = this.members.find((m) => m.id === memberId);
     if (!member?.tokens.some((t) => t.id === tokenId)) return 'unknown token';
     const adminTokens = this.members.filter((m) => m.accessLevel === 'admin').flatMap((m) => m.tokens);
-    if (member.accessLevel === 'admin' && adminTokens.length === 1) return 'нельзя отозвать последний токен admin';
+    if (member.accessLevel === 'admin' && adminTokens.length === 1) return 'the last admin token cannot be revoked';
     member.tokens = member.tokens.filter((t) => t.id !== tokenId);
     this.save();
   }

@@ -10,5 +10,5 @@ coverage/
 Thumbs.db
 .idea/
 .vscode/
-# локальные Agent Home при разработке
+# local Agent Homes during development
 .agent-home/

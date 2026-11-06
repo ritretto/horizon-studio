@@ -1,7 +1,7 @@
 import { query, type Query, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { EngineStatus, SessionItem } from '@horizon/protocol';
 
-/** Запущенный Engine для одной Session. */
+/** A running Engine for one Session. */
 export interface EngineRun {
   send(text: string): void;
   close(): void;
@@ -9,21 +9,21 @@ export interface EngineRun {
 
 export interface EngineOptions {
   cwd: string;
-  /** id разговора в Engine для продолжения. */
+  /** Engine conversation id to continue. */
   resume?: string;
   onItem(item: SessionItem): void;
   onEngineSessionId(id: string): void;
-  /** Решение по запросу разрешения; `always` — больше не спрашивать о таком в этой Session. */
+  /** Decision on a permission request; `always` means do not ask about this again in this Session. */
   askPermission(req: { tool: string; input: unknown; reason?: string }): Promise<{ allow: boolean; always: boolean }>;
 }
 
 export interface Engine {
   (opts: EngineOptions): EngineRun;
-  /** Готов ли Engine к работе на этой машине; без проверки считается готовым. */
+  /** Whether the Engine is ready on this machine; without a check it counts as ready. */
   status?(): Promise<EngineStatus>;
 }
 
-/** Claude Code через Claude Agent SDK, в режиме потокового ввода: один процесс на Session. */
+/** Claude Code through the Claude Agent SDK, in streaming input mode: one process per Session. */
 export const claudeCode: Engine = (opts) => {
   const inbox = new Inbox<SDKUserMessage>();
   const q = query({
@@ -31,13 +31,13 @@ export const claudeCode: Engine = (opts) => {
     options: {
       cwd: opts.cwd,
       resume: opts.resume,
-      // Вопросы Engine задаёт обычным текстом в конце хода, пользователь отвечает в чате.
+      // The Engine asks questions as plain text at the end of a turn, and the user answers in the chat.
       disallowedTools: ['AskUserQuestion'],
       canUseTool: async (tool, input, { suggestions, decisionReason }) => {
         const { allow, always } = await opts.askPermission({ tool, input, reason: decisionReason });
         return allow
           ? { behavior: 'allow', updatedInput: input, updatedPermissions: always ? suggestions : undefined }
-          : { behavior: 'deny', message: 'Пользователь отклонил это действие' };
+          : { behavior: 'deny', message: 'The user denied this action' };
       },
     },
   });
@@ -62,13 +62,13 @@ export const claudeCode: Engine = (opts) => {
   };
 };
 
-/** Claude Code стартует без промпта и сообщает, под каким аккаунтом работает. */
+/** Claude Code starts without a prompt and reports which account it runs under. */
 claudeCode.status = async () => {
   let q: Query | undefined;
   try {
-    q = query({ prompt: new Inbox<SDKUserMessage>() }); // без бинарника Claude Code бросает сразу
+    q = query({ prompt: new Inbox<SDKUserMessage>() }); // throws at once without the Claude Code binary
     const a = await q.accountInfo();
-    // Сторонние провайдеры (Bedrock, Vertex…) авторизуются вне Claude Code — их считаем готовыми.
+    // Third-party providers (Bedrock, Vertex…) authenticate outside Claude Code, so they count as ready.
     const firstParty = (a.apiProvider ?? 'firstParty') === 'firstParty';
     return firstParty && a.tokenSource === 'none' && !a.apiKeySource ? 'no credentials' : 'ready';
   } catch {
@@ -84,7 +84,7 @@ function toItems(msg: SDKMessage, opts: EngineOptions) {
       if (msg.subtype === 'init') opts.onEngineSessionId(msg.session_id);
       return;
     case 'assistant':
-      if (msg.parent_tool_use_id) return; // события сабагентов пока не показываем
+      if (msg.parent_tool_use_id) return; // subagent events are not shown yet
       for (const b of msg.message.content) {
         if (b.type === 'text') opts.onItem({ kind: 'text', text: b.text });
         else if (b.type === 'tool_use') opts.onItem({ kind: 'tool', id: b.id, name: b.name, input: b.input });
@@ -108,7 +108,7 @@ function toItems(msg: SDKMessage, opts: EngineOptions) {
   }
 }
 
-/** Асинхронная очередь: SDK читает из неё сообщения пользователя. */
+/** Async queue: the SDK reads user messages from it. */
 class Inbox<T> implements AsyncIterable<T> {
   private items: T[] = [];
   private wake?: () => void;

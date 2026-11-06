@@ -1,15 +1,15 @@
-// Типы сообщений между Agent, Studio-сервером и фронтом.
+// Message types between the Agent, the Studio server and the frontend.
 
 export type AccessLevel = 'admin' | 'user';
 
 export interface AgentInfo {
   version: string;
-  /** id установленной сборки (`<версия>-<хэш>`); нет — Agent запущен не из Launcher. */
+  /** Id of the installed build (`<version>-<hash>`); absent if the Agent was not started by the Launcher. */
   build?: string;
   lastUpdate?: UpdateResult;
 }
 
-/** Результат последнего Agent Update. */
+/** Result of the last Agent Update. */
 export interface UpdateResult {
   version: string;
   ok: boolean;
@@ -17,15 +17,15 @@ export interface UpdateResult {
   at: string;
 }
 
-/** Отдаётся методом `agent.info`: Agent и Member, от имени которого открыто соединение. */
+/** Returned by `agent.info`: the Agent and the Member this connection belongs to. */
 export interface AgentHello extends AgentInfo {
-  /** `tokenId` — токен, которым открыто это соединение. */
+  /** `tokenId` is the token this connection was opened with. */
   member: { id: string; name: string; accessLevel: AccessLevel; tokenId: string };
-  /** Engine этого Agent и их готовность на его машине. */
+  /** This Agent's Engines and whether they are ready on its machine. */
   engines: { id: EngineId; status: EngineStatus }[];
 }
 
-/** Member без секретов — для управления из Studio (только admin). */
+/** A Member without secrets, for management from Studio (admin only). */
 export interface MemberInfo {
   id: string;
   name: string;
@@ -44,12 +44,12 @@ export type Response =
   | { type: 'response'; id: number; result: unknown }
   | { type: 'response'; id: number; error: { message: string } };
 
-// --- Task и Session ---
+// --- Task and Session ---
 
 export type EngineId = 'claude-code';
 export type EngineStatus = 'ready' | 'not installed' | 'no credentials';
 
-/** `ask` — каждый запрос разрешения ждёт ответа пользователя (Session в Waiting); `auto` — всё разрешается. */
+/** `ask`: every permission request waits for the user (Session in Waiting). `auto`: everything is allowed. */
 export type PermissionMode = 'ask' | 'auto';
 
 export type TaskState = 'active' | 'paused' | 'completed';
@@ -61,18 +61,18 @@ export interface Task {
   engine: EngineId;
   permissionMode: PermissionMode;
   /**
-   * `paused` — все Session остановлены с возможностью продолжить; сами не продолжаются.
-   * `completed` — Session остановлены, история и Task Directory сохранены до `deleteAt`; можно переоткрыть в `paused`.
+   * `paused`: all Sessions are stopped and can be resumed; they do not continue on their own.
+   * `completed`: Sessions are stopped, history and the Task Directory are kept until `deleteAt`; can be reopened to `paused`.
    */
   state: TaskState;
   createdAt: string;
   completedAt?: string;
-  /** Когда Agent удалит завершённую Task безвозвратно. */
+  /** When the Agent will permanently delete the completed Task. */
   deleteAt?: string;
   sessions: { id: string }[];
 }
 
-/** Элемент истории Session — не зависит от Engine. */
+/** A Session history item; independent of the Engine. */
 export type SessionItem =
   | { kind: 'user'; text: string }
   | { kind: 'text'; text: string }
@@ -81,13 +81,13 @@ export type SessionItem =
   | { kind: 'permission'; requestId: string; tool: string; input: unknown; reason?: string }
   | { kind: 'permission_answer'; requestId: string; allow: boolean; always: boolean }
   | { kind: 'turn_end'; error?: string }
-  /** `interrupted` — Agent перезапустился посреди хода и сам продолжает Session. */
+  /** `interrupted`: the Agent restarted mid-turn and continues the Session on its own. */
   | { kind: 'status'; status: 'paused' | 'resumed' | 'completed' | 'reopened' | 'interrupted' }
   | { kind: 'error'; message: string };
 
 /**
- * Событие Session. `seq` — сквозной номер в пределах Session.
- * Подписка: `session.subscribe {sessionId, fromSeq}` — досылает события с seq > fromSeq, затем новые.
+ * A Session event. `seq` is a running number within the Session.
+ * Subscribing: `session.subscribe {sessionId, fromSeq}` delivers events with seq > fromSeq, then new ones.
  */
 export interface SessionEvent {
   type: 'event';
@@ -97,61 +97,61 @@ export interface SessionEvent {
   item: SessionItem;
 }
 
-// --- Браузер ↔ Studio-сервер ---
-// Запрос с `agentId` Studio-сервер пересылает этому Agent; без `agentId` — обрабатывает сам.
+// --- Browser ↔ Studio server ---
+// The Studio server forwards a request with `agentId` to that Agent, and handles one without `agentId` itself.
 
 export interface StudioRequest extends Request {
   agentId?: string;
 }
 
-/** Удалённый Agent: Studio ходит к нему через SSH-туннель. */
+/** A remote Agent: Studio reaches it through an SSH tunnel. */
 export interface SshTarget {
   host: string;
   user?: string;
-  /** Порт SSH, если не 22 и не задан в ~/.ssh/config. */
+  /** SSH port, if not 22 and not set in ~/.ssh/config. */
   port?: number;
-  /** Путь к приватному ключу на машине Studio. */
+  /** Path to the private key on the Studio machine. */
   key?: string;
 }
 
 export interface ConnectionInput {
   name: string;
-  /** Порт Agent на его машине. */
+  /** The Agent's port on its machine. */
   port: number;
   token: string;
   ssh?: SshTarget;
 }
 
 export interface AgentStatus {
-  /** id Connection в Studio. */
+  /** Connection id in Studio. */
   id: string;
   name: string;
   port: number;
   ssh?: SshTarget;
   state: 'connecting' | 'online' | 'offline' | 'unauthorized';
   hello?: AgentHello;
-  /** Почему нет связи, например ошибка ssh. */
+  /** Why there is no connection, for example an ssh error. */
   error?: string;
 }
 
-/** Studio-сервер присылает полный список при подключении и при каждом изменении. */
+/** The Studio server sends the full list on connecting and on every change. */
 export interface AgentsEvent {
   type: 'agents';
   agents: AgentStatus[];
 }
 
-/** Agent присылает каждому соединению видимый ему список Task при любом изменении. */
+/** The Agent sends each connection the Task list visible to it on any change. */
 export interface TasksEvent {
   type: 'tasks';
   tasks: Task[];
 }
 
-/** TasksEvent, пересланный Studio-сервером браузеру. */
+/** A TasksEvent forwarded by the Studio server to the browser. */
 export interface StudioTasksEvent extends TasksEvent {
   agentId: string;
 }
 
-/** SessionEvent, пересланный Studio-сервером браузеру. */
+/** A SessionEvent forwarded by the Studio server to the browser. */
 export interface StudioSessionEvent extends SessionEvent {
   agentId: string;
 }

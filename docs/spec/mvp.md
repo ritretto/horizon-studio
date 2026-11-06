@@ -1,59 +1,59 @@
-# HorizonStudio — MVP
+# HorizonStudio: MVP
 
-Термины — см. [CONTEXT.md](../../CONTEXT.md). Ключевые решения — [docs/adr](../adr).
+For terms, see [CONTEXT.md](../../CONTEXT.md). For key decisions, see [docs/adr](../adr).
 
-## Цель
+## Goal
 
-Один человек запускает Studio у себя на машине, подключает к ней один или несколько Agent (локальных или удалённых) и ведёт на них Task с Claude Code: создаёт, переключается, отвечает на вопросы и запросы разрешений, ставит на паузу, завершает. Работа не теряется при закрытии Studio, обрыве туннеля и перезагрузке машины с Agent.
+One person runs Studio on their machine, connects one or more Agents to it (local or remote) and runs Tasks on them with Claude Code: creates them, switches between them, answers questions and permission requests, pauses and completes them. Work is not lost when Studio closes, a tunnel drops or the Agent's machine reboots.
 
-## Компоненты
+## Components
 
-- **Agent** — Node.js-сервис, Windows/macOS/Linux. Слушает только `127.0.0.1`. Хранит всё своё состояние в Agent Home.
-- **Launcher** — минимальный процесс, который запускает текущую версию Agent и откатывает неудачное обновление. Ставится вместе с первой версией Agent.
-- **Studio** — веб-сервер и фронт, запускается локально, однопользовательская, без логина и без БД (конфиг-файл).
-- **protocol** — общий пакет с типами сообщений между Agent, Studio-сервером и фронтом.
+- **Agent**: a Node.js service for Windows/macOS/Linux. It listens only on `127.0.0.1` and keeps all its state in the Agent Home.
+- **Launcher**: a minimal process that starts the current Agent version and rolls back a failed update. It is installed together with the first Agent version.
+- **Studio**: a web server and frontend that runs locally, for a single user, with no login and no database (a config file).
+- **protocol**: a shared package with the message types between the Agent, the Studio server and the frontend.
 
-## Технологии
+## Technology
 
 - TypeScript, Node.js 22+, npm workspaces: `agent`, `launcher`, `studio`, `protocol`.
-- **Протокол Studio ↔ Agent**: один HTTP-порт на Agent. WebSocket с JSON-сообщениями `request {id, method, params}` / `response {id, result | error}` / `event {sessionId, seq, ...}`. Access Token передаётся при установке соединения. События Session нумеруются сквозным `seq` и пишутся в лог Session. `subscribe {sessionId, fromSeq}` досылает историю, а затем стримит новые события. Загрузка бандла для Agent Update — HTTP `PUT /update` с токеном в заголовке.
-- **Studio**: браузер общается только со Studio-сервером (`node:http` + `ws`). Studio-сервер держит Connection, SSH-туннели и Access Token и ретранслирует запросы и события, добавляя `agentId`. Фронт — React + Vite.
-- **Launcher** работает как пользовательский сервис (от пользователя ОС, без прав администратора): macOS — LaunchAgent, Linux — `systemd --user` + `loginctl enable-linger`, Windows — автозапуск при входе пользователя (`HKCU\…\Run`). Установка: `horizon-launcher install` / `uninstall`. На macOS и Windows Agent стартует только после входа пользователя (для выделенной машины нужен автологин).
+- **Studio ↔ Agent protocol**: one HTTP port per Agent. A WebSocket with JSON messages `request {id, method, params}` / `response {id, result | error}` / `event {sessionId, seq, ...}`. The Access Token is passed when the connection opens. Session events have a running `seq` and are written to the Session log. `subscribe {sessionId, fromSeq}` delivers the history and then streams new events. The bundle for an Agent Update is uploaded with HTTP `PUT /update`, with the token in a header.
+- **Studio**: the browser talks only to the Studio server (`node:http` + `ws`). The Studio server holds Connections, SSH tunnels and Access Tokens, and relays requests and events, adding `agentId`. The frontend is React + Vite.
+- **Launcher** runs as a user service (as the OS user, with no administrator rights): LaunchAgent on macOS, `systemd --user` + `loginctl enable-linger` on Linux, autostart at user login on Windows (`HKCU\…\Run`). Installation: `horizon-launcher install` / `uninstall`. On macOS and Windows the Agent starts only after the user logs in (a dedicated machine needs automatic login).
 
-## Требования
+## Requirements
 
-### Agent: установка и доступ
-1. Agent Home задаётся флагом запуска или в конфиге.
-2. При первом старте Agent создаёт Member с уровнем `admin` и выводит его Access Token.
-3. Каждое подключение аутентифицируется по Access Token; без валидного токена соединение разрывается.
-4. Admin может создавать Member (`admin` | `user`), выпускать им новые Access Token и отзывать токены по одному.
+### Agent: installation and access
+1. The Agent Home is set with a startup flag or in the config.
+2. On first start the Agent creates a Member with the `admin` level and prints their Access Token.
+3. Every connection authenticates with an Access Token; without a valid token the connection is closed.
+4. An admin can create Members (`admin` | `user`), issue them new Access Tokens and revoke tokens one at a time.
 
 ### Studio: Connection
-5. Пользователь добавляет Connection: локальная (`127.0.0.1:port`) или через SSH-туннель (хост, пользователь, ключ, удалённый порт Agent) + Access Token.
-6. Studio сама поднимает SSH-туннель, держит его и переподключается при обрыве.
-7. Studio показывает состояние каждого Agent: online/offline, версию, доступные Engine.
-8. Studio показывает общий список Task со всех подключённых Agent с пометкой, на каком Agent живёт каждая.
+5. The user adds a Connection: local (`127.0.0.1:port`) or through an SSH tunnel (host, user, key, the Agent's remote port), plus an Access Token.
+6. Studio opens the SSH tunnel itself, keeps it open and reconnects after a drop.
+7. Studio shows each Agent's state: online/offline, version, available Engines.
+8. Studio shows a shared list of Tasks from all connected Agents, marking which Agent each one lives on.
 
-### Task и Session
-9. Источник истины по Task и Session — Agent. Studio их не хранит.
-10. Создание Task: название, Engine (в MVP — Claude Code), Permission Mode (`ask` | `auto`, по умолчанию — из конфига Agent, изначально `ask`). Создаются пустая Task Directory в Agent Home и одна Session.
-11. Member с уровнем `user` видит только свои Task; `admin` работает со своими и видит все.
-12. Session работает с Engine через структурированный протокол (Claude Agent SDK), не через PTY. Studio отображает её как чат: сообщения, вызовы инструментов, запросы разрешений.
-13. Session продолжает работать при отключении Studio. При подключении Studio получает историю Session и дальше — поток событий в реальном времени. Одну Session могут одновременно смотреть несколько Studio.
-14. Session переходит в Waiting, когда Engine задаёт вопрос или (в режиме `ask`) запрашивает разрешение; пользователь отвечает из Studio.
-15. **Пауза**: все Session Task корректно останавливаются с сохранением id разговора Engine. **Продолжить** — resume. Paused-Task не продолжается автоматически.
-16. **Завершить**: Session останавливаются, Task переходит в Completed, Task Directory и история сохраняются; Completed-Task можно переоткрыть в Paused. Через 30 дней (настраивается в конфиге Agent) Task удаляется безвозвратно; владелец или admin может удалить сразу.
+### Task and Session
+9. The Agent is the source of truth for Tasks and Sessions. Studio does not store them.
+10. Creating a Task: a name, an Engine (Claude Code in the MVP), a Permission Mode (`ask` | `auto`; the default comes from the Agent config, initially `ask`). An empty Task Directory in the Agent Home and one Session are created.
+11. A Member with the `user` level sees only their own Tasks; an `admin` works with their own and sees all.
+12. A Session works with the Engine through a structured protocol (Claude Agent SDK), not a PTY. Studio shows it as a chat: messages, tool calls, permission requests.
+13. A Session keeps working when Studio disconnects. On connecting, Studio gets the Session history and then a real-time stream of events. Several Studios can watch one Session at the same time.
+14. A Session goes to Waiting when the Engine asks a question or (in `ask` mode) requests permission; the user answers from Studio.
+15. **Pause**: all Sessions of a Task stop cleanly, keeping the Engine's conversation id. **Resume** continues them. A Paused Task does not continue automatically.
+16. **Complete**: Sessions stop, the Task goes to Completed, and the Task Directory and history are kept. A Completed Task can be reopened to Paused. After 30 days (configurable in the Agent config) the Task is permanently deleted; its owner or an admin can delete it sooner.
 
-### Надёжность
-17. После перезапуска Agent (сбой, перезагрузка, обновление) Session, которые работали, становятся Interrupted и автоматически продолжаются через resume со служебным сообщением: «тебя прервал сбой — проверь состояние, исправь и продолжай; не получается — спроси пользователя».
+### Reliability
+17. After an Agent restart (a crash, a reboot, an update), Sessions that were working become Interrupted and continue automatically through resume, with a service message: "A failure interrupted you. Check the state, fix what is needed and continue. If you cannot, ask the user."
 
 ### Engine
-18. Agent автоматически определяет доступные Engine и их статус (`ready` | `not installed` | `no credentials`) и сообщает их Studio.
-19. В MVP Engine работает с учётными данными, уже настроенными на машине (общие для всех Member).
+18. The Agent automatically detects available Engines and their status (`ready` | `not installed` | `no credentials`) and reports them to Studio.
+19. In the MVP, an Engine works with the credentials already set up on the machine (shared by all Members).
 
 ### Agent Update
-20. Admin из Studio загружает собранный локально бандл Agent; Agent сохраняет его в `Agent Home/versions/<версия>` и через Launcher перезапускается на новой версии.
-21. Если новая версия не подтвердила работоспособность за N секунд, Launcher откатывается на предыдущую. Studio показывает результат обновления.
+20. An admin uploads a locally built Agent bundle from Studio. The Agent saves it in `Agent Home/versions/<version>` and restarts on the new version through the Launcher.
+21. If the new version does not confirm it is working within N seconds, the Launcher rolls back to the previous one. Studio shows the update result.
 
-## Вне MVP
-Setup Step; шаринг Task; Role и Task с несколькими Session; Engine Credentials отдельно для каждого Member и их настройка из Studio; Engine кроме Claude Code; логины и несколько User в Studio; аудит; TLS; отдельная shell-консоль в Task Directory; уведомления о Waiting вне Studio; просмотр файлов и diff в Task Directory; стрим окна разрабатываемого приложения с управлением (отдельный канал, скорее всего WebRTC).
+## Out of MVP scope
+Setup Steps; sharing Tasks; Roles and Tasks with several Sessions; per-Member Engine Credentials and configuring them from Studio; Engines other than Claude Code; logins and several Users in Studio; audit; TLS; a separate shell console in the Task Directory; notifications about Waiting outside Studio; viewing files and diffs in the Task Directory; streaming the window of the app being developed, with control (a separate channel, most likely WebRTC).

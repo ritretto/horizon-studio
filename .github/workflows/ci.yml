@@ -16,7 +16,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-  # Установка Agent как сервиса на Windows: настоящие install / uninstall (запись HKCU\…\Run).
+  # Installing the Agent as a service on Windows: real install / uninstall (writes HKCU\…\Run).
   windows-launcher:
     runs-on: windows-latest
     steps:
@@ -56,4 +56,4 @@ jobs:
           $left = Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object CommandLine -like '*agent home*'
           if ($left) { $left | Select-Object ProcessId, CommandLine; exit 1 }
           try { Invoke-WebRequest http://127.0.0.1:7431/health; 'Agent still answers'; exit 1 } catch { 'Agent stopped' }
-          exit 0 # иначе код шага — от последнего reg query, который и должен был не найти ключ
+          exit 0 # otherwise the step exit code comes from the last reg query, which was expected not to find the key

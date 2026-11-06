@@ -7,23 +7,23 @@ import { Members } from './members.tsx';
 import './style.css';
 
 const modeLabel: Record<PermissionMode, string> = {
-  ask: 'спрашивать разрешения',
-  auto: 'всё разрешено',
+  ask: 'ask for permission',
+  auto: 'everything allowed',
 };
 
 const statusToState = { paused: 'paused', reopened: 'paused', completed: 'completed', resumed: 'active', interrupted: 'active' } as const;
 
 const stateLabel: Record<AgentStatus['state'], string> = {
-  connecting: 'подключение…',
+  connecting: 'connecting…',
   online: 'online',
   offline: 'offline',
-  unauthorized: 'неверный токен',
+  unauthorized: 'invalid token',
 };
 
 const engineLabel: Record<EngineStatus, string> = {
-  ready: 'готов',
-  'not installed': 'не установлен',
-  'no credentials': 'нет учётных данных — войдите в Claude Code на машине Agent',
+  ready: 'ready',
+  'not installed': 'not installed',
+  'no credentials': 'no credentials. Log in to Claude Code on the Agent machine',
 };
 
 const completedLast = (a: Task, b: Task) => Number(a.state === 'completed') - Number(b.state === 'completed');
@@ -32,22 +32,22 @@ function App() {
   const { agents, connected, tasks, setTasks, events, request } = useStudio();
   const [selected, setSelected] = useState<{ agentId: string; taskId: string }>();
   const task = selected && tasks[selected.agentId]?.find((t) => t.id === selected.taskId);
-  /** Agent, чьи Member открыты в основной панели вместо Task. */
+  /** The Agent whose Members are open in the main panel instead of a Task. */
   const [membersOf, setMembersOf] = useState<string>();
   const membersAgent = agents.find((a) => a.id === membersOf && a.hello?.member.accessLevel === 'admin');
   const [error, setError] = useState('');
-  /** Ход Agent Update по Agent; `pending` — сборка, результат которой ждём от Agent. */
+  /** Agent Update progress per Agent; `pending` is the build whose result is awaited from the Agent. */
   const [updating, setUpdating] = useState<Record<string, { text: string; pending?: string }>>({});
 
   async function updateAgent(agentId: string) {
-    setUpdating((u) => ({ ...u, [agentId]: { text: 'Загрузка сборки и установка зависимостей…' } }));
+    setUpdating((u) => ({ ...u, [agentId]: { text: 'Uploading the build and installing dependencies…' } }));
     const res = await request('connection.update', { id: agentId });
     const r = 'result' in res ? (res.result as { status: 'current' | 'restarting'; build: string }) : undefined;
     const next = !r
-      ? { text: `Ошибка: ${'error' in res ? res.error.message : ''}` }
+      ? { text: `Error: ${'error' in res ? res.error.message : ''}` }
       : r.status === 'current'
-        ? { text: `Уже работает ${r.build}` }
-        : { text: `Перезапуск на ${r.build}…`, pending: r.build };
+        ? { text: `Already running ${r.build}` }
+        : { text: `Restarting on ${r.build}…`, pending: r.build };
     setUpdating((u) => ({ ...u, [agentId]: next }));
   }
 
@@ -56,7 +56,7 @@ function App() {
     const res = await request('task.list', undefined, agentId);
     if ('result' in res) setTasks((t) => ({ ...t, [agentId]: res.result as Task[] }));
   };
-  // Дальше Agent сам присылает список при изменениях.
+  // After this the Agent sends the list itself when it changes.
   useEffect(() => {
     online.split(',').filter(Boolean).forEach(loadTasks);
   }, [online]);
@@ -66,7 +66,7 @@ function App() {
     .sort((a, b) => completedLast(a.task, b.task) || a.task.createdAt.localeCompare(b.task.createdAt));
   const readyAgents = onlineAgents.filter((a) => a.hello?.engines.some((e) => e.status === 'ready'));
 
-  // Подписка на Session выбранной Task; после переподключения Agent — заново, с последнего seq.
+  // Subscribe to the selected Task's Session; after an Agent reconnect, subscribe again from the last seq.
   const sessionId = task?.sessions[0].id;
   const agentOnline = !!selected && online.split(',').includes(selected.agentId);
   useEffect(() => {
@@ -84,12 +84,12 @@ function App() {
     const res = await request('task.create', { name: data.get('name'), permissionMode: data.get('permissionMode') || undefined }, agentId);
     if ('error' in res) return setError(res.error.message);
     form.reset();
-    await loadTasks(agentId); // чтобы Task была в списке сразу, не дожидаясь события
+    await loadTasks(agentId); // so the Task is listed at once, without waiting for the event
     setSelected({ agentId, taskId: (res.result as Task).id });
     setMembersOf(undefined);
   }
 
-  // Состояние Task берём из событий Session — так его сразу видят все Studio.
+  // Task state comes from Session events, so all Studios see it at once.
   const status = sessionId ? events[sessionId]?.findLast((e) => e.item.kind === 'status')?.item : undefined;
   const state: TaskState | undefined = status?.kind === 'status' ? statusToState[status.status] : task?.state;
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -128,10 +128,10 @@ function App() {
           <img src="/favicon.png" alt="" width={24} height={24} />
           HorizonStudio
         </h1>
-        {!connected && <p className="warn">Нет связи со Studio-сервером, переподключаемся…</p>}
-        {agents.length === 0 && <p className="muted">Добавьте Connection к Agent ниже.</p>}
+        {!connected && <p className="warn">No connection to the Studio server. Reconnecting…</p>}
+        {agents.length === 0 && <p className="muted">Add a Connection to an Agent below.</p>}
 
-        {/* Task со всех online-Agent; Task недоступных Agent не показываются. */}
+        {/* Tasks from all online Agents; Tasks of unreachable Agents are not shown. */}
         <ul className="tasks">
           {allTasks.map(({ agent, task: t }) => (
             <li key={agent.id + t.id}>
@@ -139,8 +139,8 @@ function App() {
                 className={`${selected?.agentId === agent.id && selected.taskId === t.id ? 'active' : ''} ${t.state}`}
                 onClick={() => (setSelected({ agentId: agent.id, taskId: t.id }), setMembersOf(undefined))}
               >
-                {t.state === 'paused' && <span title="На паузе">⏸ </span>}
-                {t.state === 'completed' && <span title="Завершена">✓ </span>}
+                {t.state === 'paused' && <span title="Paused">⏸ </span>}
+                {t.state === 'completed' && <span title="Completed">✓ </span>}
                 {t.name}
                 {agents.length > 1 && <span className="task-agent">{agent.name}</span>}
               </button>
@@ -150,22 +150,22 @@ function App() {
         {readyAgents.length > 0 && (
           <form className="new-task" onSubmit={createTask}>
             <div>
-              <input name="name" placeholder="Новая Task" required />
+              <input name="name" placeholder="New Task" required />
               <button>+</button>
             </div>
             {readyAgents.length > 1 && (
               <select name="agentId" aria-label="Agent">
                 {readyAgents.map((a) => (
                   <option key={a.id} value={a.id}>
-                    на {a.name}
+                    on {a.name}
                   </option>
                 ))}
               </select>
             )}
             <select name="permissionMode" aria-label="Permission Mode" defaultValue="">
-              <option value="">Разрешения: по умолчанию Agent</option>
-              <option value="ask">Спрашивать разрешения</option>
-              <option value="auto">Разрешать всё без вопросов</option>
+              <option value="">Permissions: Agent default</option>
+              <option value="ask">Ask for permission</option>
+              <option value="auto">Allow everything without asking</option>
             </select>
           </form>
         )}
@@ -180,11 +180,11 @@ function App() {
                 {a.hello ? `v${a.hello.version} · ${a.hello.member.name}` : stateLabel[a.state]}
               </span>
               {a.hello?.member.accessLevel === 'admin' && (
-                <button className="link" title="Member и Access Token" onClick={() => setMembersOf(a.id)}>
+                <button className="link" title="Members and Access Tokens" onClick={() => setMembersOf(a.id)}>
                   Member
                 </button>
               )}
-              <button className="link" title="Удалить Connection" onClick={() => request('connection.remove', { id: a.id })}>
+              <button className="link" title="Remove Connection" onClick={() => request('connection.remove', { id: a.id })}>
                 ×
               </button>
             </div>
@@ -197,9 +197,9 @@ function App() {
             {a.error && <p className="warn">{a.error}</p>}
             {a.hello?.member.accessLevel === 'admin' && a.hello.build && (
               <p className="muted">
-                Сборка {a.hello.build}{' '}
-                <button className="link" title="Загрузить локальную сборку Agent" onClick={() => updateAgent(a.id)}>
-                  Обновить
+                Build {a.hello.build}{' '}
+                <button className="link" title="Upload the local Agent build" onClick={() => updateAgent(a.id)}>
+                  Update
                 </button>
               </p>
             )}
@@ -209,8 +209,8 @@ function App() {
             {a.hello?.lastUpdate && (
               <p className={a.hello.lastUpdate.ok ? 'muted' : 'warn'}>
                 {a.hello.lastUpdate.ok
-                  ? `Обновлено до ${a.hello.lastUpdate.version}`
-                  : `Обновление до ${a.hello.lastUpdate.version} не удалось: ${a.hello.lastUpdate.error}; откат на прежнюю версию`}{' '}
+                  ? `Updated to ${a.hello.lastUpdate.version}`
+                  : `Update to ${a.hello.lastUpdate.version} failed: ${a.hello.lastUpdate.error}; rolled back to the previous version`}{' '}
                 ({new Date(a.hello.lastUpdate.at).toLocaleString()})
               </p>
             )}
@@ -224,19 +224,19 @@ function App() {
         ))}
 
         <details className="new-connection" open={agents.length === 0}>
-          <summary>Новая Connection</summary>
+          <summary>New Connection</summary>
           <form onSubmit={addConnection}>
-            <input name="name" placeholder="Название" required />
-            <input name="port" type="number" defaultValue={7400} min={1} max={65535} required aria-label="Порт Agent" />
+            <input name="name" placeholder="Name" required />
+            <input name="port" type="number" defaultValue={7400} min={1} max={65535} required aria-label="Agent port" />
             <input name="token" placeholder="Access Token" required autoComplete="off" />
             <fieldset>
-              <legend>Удалённый Agent — через SSH</legend>
-              <input name="sshHost" placeholder="Хост (пусто — Agent на этой машине)" />
-              <input name="sshUser" placeholder="Пользователь" />
-              <input name="sshPort" type="number" min={1} max={65535} placeholder="Порт SSH (22)" />
-              <input name="sshKey" placeholder="Путь к ключу (~/.ssh/id_ed25519)" />
+              <legend>Remote Agent, through SSH</legend>
+              <input name="sshHost" placeholder="Host (empty if the Agent is on this machine)" />
+              <input name="sshUser" placeholder="User" />
+              <input name="sshPort" type="number" min={1} max={65535} placeholder="SSH port (22)" />
+              <input name="sshKey" placeholder="Key path (~/.ssh/id_ed25519)" />
             </fieldset>
-            <button>Добавить</button>
+            <button>Add</button>
           </form>
         </details>
         {error && <p className="warn">{error}</p>}
@@ -257,25 +257,25 @@ function App() {
               </h2>
               {agentOnline && (
                 <div className="task-actions">
-                  {state === 'active' && <button onClick={() => act('pause')}>Пауза</button>}
-                  {state === 'paused' && <button onClick={() => act('resume')}>Продолжить</button>}
-                  {state !== 'completed' && <button onClick={() => act('complete')}>Завершить</button>}
-                  {state === 'completed' && <button onClick={() => act('reopen')}>Переоткрыть</button>}
+                  {state === 'active' && <button onClick={() => act('pause')}>Pause</button>}
+                  {state === 'paused' && <button onClick={() => act('resume')}>Resume</button>}
+                  {state !== 'completed' && <button onClick={() => act('complete')}>Complete</button>}
+                  {state === 'completed' && <button onClick={() => act('reopen')}>Reopen</button>}
                   {state === 'completed' &&
                     (confirmDelete ? (
                       <button className="danger" onClick={() => act('delete')}>
-                        Удалить безвозвратно?
+                        Delete permanently?
                       </button>
                     ) : (
-                      <button onClick={() => setConfirmDelete(true)}>Удалить</button>
+                      <button onClick={() => setConfirmDelete(true)}>Delete</button>
                     ))}
                 </div>
               )}
             </header>
             {state === 'completed' && task.deleteAt && (
-              <p className="muted">Task завершена и будет удалена {new Date(task.deleteAt).toLocaleDateString()}.</p>
+              <p className="muted">Task is completed and will be deleted on {new Date(task.deleteAt).toLocaleDateString()}.</p>
             )}
-            {!agentOnline && <p className="warn">Agent недоступен — Session продолжает работать на нём, история подгрузится после переподключения.</p>}
+            {!agentOnline && <p className="warn">Agent is unreachable. The Session keeps running on it, and the history will load after reconnecting.</p>}
             <Chat
               events={events[sessionId] ?? []}
               state={state ?? 'active'}
@@ -286,7 +286,7 @@ function App() {
             />
           </>
         ) : (
-          <p className="muted">Выберите или создайте Task.</p>
+          <p className="muted">Select or create a Task.</p>
         )}
       </main>
     </div>

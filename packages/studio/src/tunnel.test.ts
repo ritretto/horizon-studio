@@ -11,7 +11,7 @@ import { AgentLink } from './agent-link.ts';
 
 const sshd = '/usr/sbin/sshd';
 
-test('Connection через SSH-туннель: подключается, переживает обрыв, сообщает об ошибке ssh', { skip: !existsSync(sshd) && 'нет sshd', timeout: 30_000 }, async () => {
+test('Connection through an SSH tunnel: connects, survives a drop, reports an ssh error', { skip: !existsSync(sshd) && 'no sshd', timeout: 30_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'horizon-ssh-'));
   const key = (name: string) => (execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', join(dir, name)]), join(dir, name));
   const hostKey = key('host_key');
@@ -39,10 +39,10 @@ test('Connection через SSH-туннель: подключается, пер
   const link: AgentLink = new AgentLink(conn, join(dir, 'known_hosts'), () => {}, () => {});
   const until = watch(() => link);
   await until((s) => s.state === 'online');
-  assert.ok(existsSync(join(dir, 'known_hosts')), 'ключ хоста запомнен в known_hosts Studio');
+  assert.ok(existsSync(join(dir, 'known_hosts')), 'the host key is saved in the Studio known_hosts file');
 
-  // Обрыв: sshd и его сессии убиты — Studio видит offline и сама подключается снова, когда sshd вернулся.
-  spawnSync('pkill', ['-P', String(server.pid)]); // сессии sshd, в т.ч. наш туннель
+  // Drop: sshd and its sessions are killed; Studio sees offline and reconnects by itself when sshd returns.
+  spawnSync('pkill', ['-P', String(server.pid)]); // sshd sessions, including our tunnel
   server.kill();
   await until((s) => s.state === 'offline');
   server = startSshd();

@@ -11,21 +11,21 @@ import { Tasks } from './tasks.ts';
 
 export interface StartedAgent {
   server: Server;
-  /** Штатная остановка: закрывает процессы Engine и сервер. */
+  /** Graceful stop: closes Engine processes and the server. */
   stop(): void;
-  /** Access Token первого admin, если Agent Home только что создан. */
+  /** Access Token of the first admin, if the Agent Home was just created. */
   adminToken?: string;
 }
 
 export interface AgentOptions {
   engine?: Engine;
-  /** Permission Mode для новых Task, если он не указан явно (из конфига Agent). */
+  /** Permission Mode for new Tasks when none is given (from the Agent config). */
   defaultPermissionMode?: PermissionMode;
-  /** Через сколько дней завершённая Task удаляется безвозвратно. */
+  /** How many days until a completed Task is permanently deleted. */
   completedRetentionDays?: number;
-  /** id сборки, из которой Agent запущен Launcher'ом. */
+  /** Id of the build the Launcher started this Agent from. */
   build?: string;
-  /** Перезапуск через Launcher на новой версии; без Launcher Agent Update невозможен. */
+  /** Restart on the new version through the Launcher; Agent Update is not possible without it. */
   restart?: () => void;
 }
 
@@ -41,9 +41,9 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
   setInterval(() => tasks.purge(), 60 * 60 * 1000).unref();
   const defaultPermissionMode = opts.defaultPermissionMode ?? 'ask';
   const adminToken = members.isEmpty ? members.create('admin', 'admin').token : undefined;
-  /** Открытые соединения: кто и по какому токену. Отзыв токена их закрывает. */
+  /** Open connections: who, and with which token. Revoking a token closes them. */
   const sockets = new Map<WebSocket, { member: Member; tokenId: string }>();
-  // Каждому соединению — его список Task; несколько изменений за один тик — одно событие.
+  // Each connection gets its own Task list; several changes in one tick make one event.
   let tasksChanged = false;
   tasks.onChange = () => {
     if (tasksChanged) return;
@@ -56,11 +56,11 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
 
   const info = (): AgentInfo => ({ version: pkg.version, build: opts.build, lastUpdate: lastUpdate(home) });
 
-  /** Agent Update: сборка ставится в versions/, Launcher перезапускает Agent на ней и откатит, если она не поднимется. */
+  /** Agent Update: the build goes into versions/, the Launcher restarts the Agent on it and rolls back if it fails to start. */
   async function update(req: IncomingMessage) {
     const auth = members.authenticate(bearer(req) ?? '');
     if (auth?.member.accessLevel !== 'admin') throw httpError(403, 'only admin can update Agent');
-    if (!opts.restart) throw httpError(409, 'Agent запущен без Launcher — обновление невозможно');
+    if (!opts.restart) throw httpError(409, 'Agent is running without the Launcher, so it cannot be updated');
     let body = '';
     for await (const chunk of req) body += chunk;
     const build = JSON.parse(body) as AgentBuild;
@@ -68,7 +68,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
     const id = await installVersion(home, build);
     if (id === currentVersion(home)) return { status: 'current', build: id };
     writeFileSync(join(home, 'next'), id);
-    setTimeout(opts.restart, 200); // сначала ответ уходит Studio
+    setTimeout(opts.restart, 200); // send the response to Studio first
     return { status: 'restarting', build: id };
   }
 
@@ -158,7 +158,7 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
     case 'member.revokeToken': {
       const error = members.revoke(p.memberId, p.tokenId);
       if (error) return fail(error);
-      // После ответа: отзыв собственного токена закрывает и это соединение.
+      // After the response: revoking your own token also closes this connection.
       setImmediate(() => sockets.forEach((a, s) => a.tokenId === p.tokenId && s.close(1008, 'token revoked')));
       return ok(null);
     }
@@ -190,7 +190,7 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
       const session = tasks.session(p.sessionId, member);
       if (!session) return fail('unknown session');
       if (typeof p.text !== 'string' || !p.text.trim()) return fail('text is required');
-      if (!session.send(p.text)) return fail('Task на паузе или завершена');
+      if (!session.send(p.text)) return fail('Task is paused or completed');
       return ok(null);
     }
     case 'session.answer': {
@@ -203,7 +203,7 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
       const session = tasks.session(p.sessionId, member);
       if (!session) return fail('unknown session');
       subscriptions.get(p.sessionId)?.();
-      // Ответ уходит после истории — это нормально: клиент различает их по type.
+      // The response goes out after the history. That is fine: the client tells them apart by type.
       subscriptions.set(p.sessionId, session.subscribe(Number(p.fromSeq) || 0, (e) => ws.send(JSON.stringify(e))));
       return ok(null);
     }

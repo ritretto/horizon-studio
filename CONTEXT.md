@@ -1,93 +1,93 @@
 # HorizonStudio
 
-Среда для распределённой разработки кода: центральный хаб, к которому подключаются агенты на разных машинах и на которых запускаются задачи разработки ПО.
+An environment for distributed software development: a central hub that connects to agents on different machines, which run software development tasks.
 
 ## Language
 
 **Studio** (HorizonStudio):
-Центральный хаб (веб-сервер + фронт), который подключается к одному или нескольким Agent, показывает их состояние и общий список Task.
-_Avoid_: Hub, сервер, панель
+The central hub (web server and frontend) that connects to one or more Agents and shows their state and a shared list of Tasks.
+_Avoid_: Hub, server, panel
 
 **Agent** (HorizonAgent):
-Устанавливаемый процесс на локальной или удалённой машине (Windows/macOS/Linux), к которому подключаются одна или несколько Studio и который выполняет Task. Является источником истины по своим Task и Session.
-_Avoid_: Runner, worker, нода, клиент
+An installed process on a local or remote machine (Windows/macOS/Linux) that one or more Studios connect to, and that runs Tasks. It is the source of truth for its Tasks and Sessions.
+_Avoid_: Runner, worker, node, client
 
 **Launcher**:
-Минимальный, редко меняющийся процесс, который устанавливается на машину один раз, запускает нужную версию Agent и откатывает её на предыдущую, если новая не поднялась.
+A minimal, rarely changing process installed once on a machine. It starts the right Agent version and rolls back to the previous one if a new version fails to start.
 _Avoid_: updater, supervisor, bootstrap
 
 **Agent Update**:
-Замена версии Agent, которую admin инициирует из Studio, загружая сборку в Agent; при неудаче Launcher откатывает её.
-_Avoid_: деплой, апгрейд
+Replacing the Agent version, started by an admin from Studio by uploading a build to the Agent. If it fails, the Launcher rolls it back.
+_Avoid_: deploy, upgrade
 
 **Connection**:
-Принадлежащая Studio запись о том, как достучаться до конкретного Agent: напрямую (та же машина) или через SSH-туннель, который Studio сама поднимает и поддерживает. Agent доступен только с localhost. Каждый User привязывает к Connection свой Access Token.
-_Avoid_: подключение агента, link, endpoint
+A record owned by Studio of how to reach a specific Agent: directly (same machine) or through an SSH tunnel that Studio opens and maintains itself. An Agent is reachable only from localhost. Each User attaches their own Access Token to a Connection.
+_Avoid_: agent connection, link, endpoint
 
 **User**:
-Человек с точки зрения Studio (учётная запись в Studio). Не путать с Member — тот же человек с точки зрения Agent.
-_Avoid_: пользователь агента, Member
+A person from Studio's point of view (an account in Studio). Not to be confused with Member, which is the same person from an Agent's point of view.
+_Avoid_: agent user, Member
 
 **Member**:
-Человек, известный конкретному Agent, с определённым Access Level. Один и тот же Member может работать с Agent из разных Studio.
-_Avoid_: пользователь агента, аккаунт, клиент
+A person known to a specific Agent, with a certain Access Level. The same Member can work with an Agent from different Studios.
+_Avoid_: agent user, account, client
 
 **Access Token**:
-Секрет, принадлежащий Member, по которому Agent его узнаёт. У Member обычно по одному токену на каждую Studio; токены отзываются по отдельности.
-_Avoid_: ключ, пароль, API key
+A secret belonging to a Member, by which the Agent recognizes them. A Member usually has one token per Studio; tokens are revoked individually.
+_Avoid_: key, password, API key
 
 **Access Level**:
-Права Member на Agent: `admin` (в т.ч. управление Member и Access Token) или `user`.
-_Avoid_: роль, права агента
+A Member's rights on an Agent: `admin` (including managing Members and Access Tokens) or `user`.
+_Avoid_: role, agent rights
 
 **Agent Home**:
-Рабочая директория Agent (задаётся при запуске или в конфиге), где он хранит свои данные и Task Directory.
-_Avoid_: data dir, workdir агента
+The Agent's working directory (set at startup or in the config), where it keeps its data and Task Directories.
+_Avoid_: data dir, agent workdir
 
 **Task**:
-Единица работы Member на Agent: принадлежит одному Member, содержит одну или несколько Session, может быть поставлена на паузу, завершена и позже удалена. Права доступа проверяются на уровне Task. Задаёт Engine по умолчанию; в простом случае содержит одну Session на этом Engine, в сложном каждая Session настраивается отдельно.
-_Avoid_: сессия, скоуп, job, workspace
+A unit of a Member's work on an Agent. It belongs to one Member, contains one or more Sessions, and can be paused, completed and later deleted. Access is checked at the Task level. It sets the default Engine; in the simple case it has one Session on that Engine, and in the complex case each Session is configured separately.
+_Avoid_: session, scope, job, workspace
 
 **Paused** (Task):
-Состояние Task, все Session которой корректно остановлены с возможностью продолжить; не продолжается автоматически, в том числе после перезапуска Agent.
+The state of a Task whose Sessions have all stopped cleanly and can be resumed. It does not continue automatically, including after an Agent restart.
 _Avoid_: frozen, suspended
 
 **Completed** (Task):
-Состояние Task, все Session которой остановлены, а Task Directory и история сохранены для просмотра. Можно переоткрыть в Paused; через 30 дней (настраивается в Agent) Task удаляется безвозвратно.
+The state of a Task whose Sessions have all stopped, with its Task Directory and history kept for viewing. It can be reopened to Paused. After 30 days (configurable on the Agent) the Task is permanently deleted.
 _Avoid_: archived, closed, done
 
 **Permission Mode**:
-Настройка Task, определяющая, как Session обрабатывают запросы Engine на разрешение действий: `ask` (каждый запрос переводит Session в Waiting, по умолчанию) или `auto` (всё разрешается без вопросов). Значение по умолчанию задаёт admin Agent в его конфиге.
-_Avoid_: режим безопасности, autonomy level
+A Task setting that decides how Sessions handle the Engine's permission requests: `ask` (each request puts the Session in Waiting; the default) or `auto` (everything is allowed without asking). An Agent's admin sets the default in its config.
+_Avoid_: safety mode, autonomy level
 
 **Task Directory**:
-Отдельная директория внутри Agent Home, создаваемая под каждую Task; в ней работают все Session этой Task.
-_Avoid_: workspace, рабочая папка
+A separate directory inside the Agent Home, created for each Task. All Sessions of that Task work in it.
+_Avoid_: workspace, working folder
 
 **Setup Step**:
-Настраиваемый предварительный шаг Task, готовящий Task Directory (скачать репозиторий, применить настройки, проверить инструменты). У Task их может быть несколько; по умолчанию нет ни одного, и Task Directory пуста.
-_Avoid_: init, bootstrap, хук
+A configurable preliminary step of a Task that prepares the Task Directory (download a repository, apply settings, check tools). A Task can have several; by default it has none, and the Task Directory is empty.
+_Avoid_: init, bootstrap, hook
 
 **Engine**:
-Тип ИИ-инструмента для разработки, который Agent умеет запускать (Claude Code, Codex, Aider).
-_Avoid_: ИИ-агент, Provider, Backend, модель
+A type of AI development tool that an Agent can run (Claude Code, Codex, Aider).
+_Avoid_: AI agent, Provider, Backend, model
 
 **Engine Credentials**:
-Учётные данные, с которыми Session запускает Engine (подписка или API-ключ). Принадлежат паре Member + Engine и хранятся на Agent (настраиваются через Studio); если у Member их нет, используются общие учётные данные Agent, если admin их разрешил.
-_Avoid_: ключи, аккаунт ИИ, логин
+The credentials a Session starts an Engine with (a subscription or an API key). They belong to a Member and Engine pair and are stored on the Agent (configured through Studio). If a Member has none, the Agent's shared credentials are used, if an admin allows it.
+_Avoid_: keys, AI account, login
 
 **Session**:
-Конкретный запущенный экземпляр Engine внутри Task, со своей консолью и историей. Живёт на Agent независимо от подключения Studio и переживает перезапуск Agent.
-_Avoid_: ИИ-агент, процесс, инстанс
+A specific running instance of an Engine inside a Task, with its own console and history. It lives on the Agent regardless of Studio's connection and survives an Agent restart.
+_Avoid_: AI agent, process, instance
 
 **Waiting** (Session):
-Состояние Session, когда Engine ждёт ответа пользователя — на вопрос или на запрос разрешения.
+The state of a Session when the Engine is waiting for the user to answer a question or a permission request.
 _Avoid_: blocked, idle
 
 **Interrupted** (Session):
-Состояние Session, чей процесс умер не по воле пользователя (сбой, перезагрузка); Agent автоматически пытается её продолжить.
+The state of a Session whose process died without the user asking for it (a crash, a reboot). The Agent automatically tries to continue it.
 _Avoid_: crashed, failed
 
 **Role**:
-Назначение Session в многосессионном сценарии (архитектор, ревьюер, тестировщик).
-_Avoid_: персона, тип агента
+The purpose of a Session in a multi-Session scenario (architect, reviewer, tester).
+_Avoid_: persona, agent type

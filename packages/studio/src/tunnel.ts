@@ -3,19 +3,19 @@ import { connect, createServer } from 'node:net';
 import type { SshTarget } from '@horizon/protocol';
 
 export interface Tunnel {
-  /** Локальный порт, проброшенный на порт Agent на удалённой машине. */
+  /** Local port forwarded to the Agent's port on the remote machine. */
   port: number;
   close(): void;
 }
 
-// Туннели не должны пережить Studio-сервер.
+// Tunnels must not outlive the Studio server.
 const running = new Set<ChildProcess>();
 process.on('exit', () => running.forEach((p) => p.kill()));
 
 /**
- * Поднимает `ssh -L` до Agent системным ssh (ключи, ssh-agent и ~/.ssh/config пользователя работают как обычно).
- * Резолвится, когда туннель принимает соединения; отклоняется с последней строкой ошибки ssh.
- * `onExit` вызывается, если туннель упал после установки.
+ * Opens `ssh -L` to the Agent with the system ssh (the user's keys, ssh-agent and ~/.ssh/config work as usual).
+ * Resolves when the tunnel accepts connections; rejects with the last ssh error line.
+ * `onExit` is called if the tunnel fails after being established.
  */
 export async function openTunnel(ssh: SshTarget, agentPort: number, knownHosts: string, onExit: () => void): Promise<Tunnel> {
   const port = await freePort();
@@ -23,11 +23,11 @@ export async function openTunnel(ssh: SshTarget, agentPort: number, knownHosts: 
     '-N',
     '-L', `127.0.0.1:${port}:127.0.0.1:${agentPort}`,
     '-o', 'ExitOnForwardFailure=yes',
-    '-o', 'BatchMode=yes', // без интерактивных вопросов: пароль, passphrase
+    '-o', 'BatchMode=yes', // no interactive prompts: password, passphrase
     '-o', 'ConnectTimeout=10',
     '-o', 'ServerAliveInterval=15',
     '-o', 'ServerAliveCountMax=3',
-    // Свой known_hosts рядом с конфигом Studio; ключ нового хоста запоминается при первом подключении.
+    // A separate known_hosts next to Studio's config; a new host key is saved on first connection.
     '-o', 'StrictHostKeyChecking=accept-new',
     '-o', `UserKnownHostsFile="${knownHosts}"`,
     ...(ssh.key ? ['-i', ssh.key, '-o', 'IdentitiesOnly=yes'] : []),
@@ -40,13 +40,13 @@ export async function openTunnel(ssh: SshTarget, agentPort: number, knownHosts: 
   let stderr = '';
   proc.stderr!.on('data', (d) => (stderr += d));
   let exited = false;
-  proc.on('error', (e) => (stderr += e.message)); // нет ssh в PATH; за ним приходит close
+  proc.on('error', (e) => (stderr += e.message)); // no ssh in PATH; close follows
   proc.on('close', () => {
     exited = true;
     running.delete(proc);
   });
 
-  // ssh не сообщает о готовности — ждём, пока локальный порт начнёт принимать соединения.
+  // ssh does not report readiness, so wait until the local port accepts connections.
   while (!(await accepts(port))) {
     if (exited) {
       const reason = stderr.trim().split('\n').filter((l) => !l.startsWith('Warning: Permanently added')).at(-1);
