@@ -550,3 +550,28 @@ test('pause before Engine thread creation replays the original input', async (t)
   await c.call('task.resume', { taskId: task.id });
   assert.deepEqual(prompts, ['original task instructions', 'original task instructions']);
 });
+
+
+test('Task creation defaults to the first ready Engine and rejects unavailable Engines', async (t) => {
+  let claudeReady = false;
+  let codexReady = true;
+  const claude = Object.assign((opts: Parameters<Engine>[0]) => echo(opts), {
+    status: async () => claudeReady ? 'ready' as const : 'no credentials' as const,
+  });
+  const codexEngine = Object.assign((opts: Parameters<Engine>[0]) => echo(opts), {
+    status: async () => codexReady ? 'ready' as const : 'not installed' as const,
+  });
+  const home = mkdtempSync(join(tmpdir(), 'horizon-engine-choice-'));
+  const agent = await startAgent(home, 0, { engine: claude, codexEngine });
+  t.after(() => agent.stop());
+  const c = client(await connect((agent.server.address() as AddressInfo).port, agent.adminToken!));
+  t.after(() => c.close());
+  assert.equal(await c.call('task.create', { name: 'Explicit unavailable', engine: 'claude-code' }), undefined);
+  assert.equal((await c.call('task.create', { name: 'Default Codex' })).engine, 'codex');
+  claudeReady = true;
+  assert.equal((await c.call('task.create', { name: 'Default Claude' })).engine, 'claude-code');
+  claudeReady = false;
+  codexReady = false;
+  assert.equal(await c.call('task.create', { name: 'None ready' }), undefined);
+  assert.equal((await c.call('task.list')).length, 2);
+});

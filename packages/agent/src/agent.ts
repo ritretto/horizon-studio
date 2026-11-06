@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { join } from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { AccessLevel, AgentHello, TasksEvent, AgentInfo, EngineId, PermissionMode, Request, Response } from '@horizon/protocol';
+import type { AccessLevel, AgentHello, TasksEvent, AgentInfo, EngineAvailability, EngineId, PermissionMode, Request, Response } from '@horizon/protocol';
 import { currentVersion, installVersion, lastUpdate, type AgentBuild } from '@horizon/launcher/versions';
 import pkg from '../package.json' with { type: 'json' };
 import { claudeCode, type Engine } from './engine.ts';
@@ -141,6 +141,11 @@ interface Context {
 const permissionModes: PermissionMode[] = ['ask', 'auto'];
 const accessLevels: AccessLevel[] = ['admin', 'user'];
 
+async function availability(engine: Engine): Promise<EngineAvailability> {
+  const result = (await engine.status?.()) ?? 'ready';
+  return typeof result === 'string' ? { status: result } : result;
+}
+
 async function handle(req: Request, { info, member, tokenId, members, sockets, engines, tasks, ws, subscriptions, defaultPermissionMode }: Context): Promise<Response> {
   const ok = (result: unknown): Response => ({ type: 'response', id: req.id, result });
   const fail = (message: string): Response => ({ type: 'response', id: req.id, error: { message } });
@@ -169,24 +174,22 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
       const result: AgentHello = {
         ...info(),
         member: { id: member.id, name: member.name, accessLevel: member.accessLevel, tokenId },
-        engines: await Promise.all([...engines].map(async ([id, engine]) => {
-          const availability = (await engine.status?.()) ?? 'ready';
-          return { id, ...(typeof availability === 'string' ? { status: availability } : availability) };
-        })),
+        engines: await Promise.all([...engines].map(async ([id, engine]) => ({ id, ...await availability(engine) }))),
       };
       return ok(result);
     }
     case 'task.create': {
       if (typeof p.name !== 'string' || !p.name.trim()) return fail('name is required');
       if (p.permissionMode !== undefined && !permissionModes.includes(p.permissionMode)) return fail('invalid permissionMode');
-      const engine = p.engine === undefined ? 'claude-code' : p.engine;
-      if (!engines.has(engine)) return fail('unknown engine');
-      if (p.engine !== undefined) {
-        const availability = (await engines.get(engine)!.status?.()) ?? 'ready';
-        const status = typeof availability === 'string' ? availability : availability.status;
-        if (status !== 'ready') return fail(`Engine ${engine} is ${status}`);
+      const candidates = p.engine === undefined ? [...engines.keys()] : [p.engine];
+      for (const id of candidates) {
+        const engine = engines.get(id);
+        if (!engine) return fail('unknown engine');
+        const { status } = await availability(engine);
+        if (status === 'ready') return ok(tasks.create(p.name.trim(), member, p.permissionMode ?? defaultPermissionMode, id));
+        if (p.engine !== undefined) return fail(`Engine ${id} is ${status}`);
       }
-      return ok(tasks.create(p.name.trim(), member, p.permissionMode ?? defaultPermissionMode, engine));
+      return fail('No ready Engine available');
     }
     case 'task.list':
       return ok(tasks.list(member));
