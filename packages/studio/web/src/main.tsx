@@ -23,11 +23,12 @@ const stateLabel: Record<AgentStatus['state'], string> = {
 const engineName: Record<EngineId, string> = { 'claude-code': 'Claude Code', codex: 'OpenAI Codex' };
 
 const engineLabel: Record<EngineStatus, string> = {
-  ready: 'готов',
-  'not installed': 'не установлен',
-  'no credentials': 'нет учётных данных',
-  unavailable: 'не удалось запустить',
+  ready: 'Ready',
+  'not installed': 'Not installed',
+  'no credentials': 'No credentials',
+  unavailable: 'Unavailable',
 };
+const loginLabel: Record<string, string> = { chatgpt: 'ChatGPT', apiKey: 'API key' };
 
 const completedLast = (a: Task, b: Task) => Number(a.state === 'completed') - Number(b.state === 'completed');
 
@@ -68,10 +69,12 @@ function App() {
     .flatMap((agent) => (tasks[agent.id] ?? []).map((task) => ({ agent, task })))
     .sort((a, b) => completedLast(a.task, b.task) || a.task.createdAt.localeCompare(b.task.createdAt));
   const engineChoices = onlineAgents.flatMap((agent) =>
-    (agent.hello?.engines ?? []).filter((e) => e.status === 'ready').map((e) => ({
+    [...(agent.hello?.engines ?? [])].sort((a, b) => Number(a.id === 'codex') - Number(b.id === 'codex')).map((e) => ({
       key: JSON.stringify([agent.id, e.id]), agentId: agent.id, agentName: agent.name, engine: e.id,
+      status: e.status, loginMethod: e.loginMethod,
     })),
   );
+  const defaultChoice = engineChoices.find((choice) => choice.status === 'ready')?.key;
 
   // Подписка на Session выбранной Task; после переподключения Agent — заново, с последнего seq.
   const sessionId = task?.sessions[0].id;
@@ -88,7 +91,7 @@ function App() {
     const form = e.currentTarget;
     const data = new FormData(form);
     const selection = engineChoices.find((choice) => choice.key === data.get('engineChoice'));
-    if (!selection) return;
+    if (!selection || selection.status !== 'ready') return;
     const { agentId, engine } = selection;
     const res = await request('task.create', { name: data.get('name'), engine, permissionMode: data.get('permissionMode') || undefined }, agentId);
     if ('error' in res) return setError(res.error.message);
@@ -160,12 +163,12 @@ function App() {
           <form className="new-task" onSubmit={createTask}>
             <div>
               <input name="name" placeholder="Новая Task" required />
-              <button>+</button>
+              <button disabled={!defaultChoice}>+</button>
             </div>
-            <select name="engineChoice" aria-label="Движок и Agent">
-              {engineChoices.map(({ key, agentName, engine }) => (
-                <option key={key} value={key}>
-                  {engineName[engine]} · {agentName}
+            <select name="engineChoice" aria-label="Engine and Agent" defaultValue={defaultChoice} key={defaultChoice}>
+              {engineChoices.map(({ key, agentName, engine, status, loginMethod }) => (
+                <option key={key} value={key} disabled={status !== 'ready'}>
+                  {engineName[engine]} · {agentName} — {engineLabel[status]}{loginMethod ? ` · ${loginLabel[loginMethod] ?? loginMethod}` : ''}
                 </option>
               ))}
             </select>
@@ -224,8 +227,8 @@ function App() {
             {a.state === 'online' &&
               a.hello?.engines.map((e) => (
                 <p key={e.id} className={e.status === 'ready' ? 'muted' : 'warn'}>
-                  {engineName[e.id]}: {engineLabel[e.status]}
-                  {e.status === 'no credentials' && (e.id === 'codex' ? ' · codex login на машине Agent' : ' · войдите в Claude Code на машине Agent')}
+                  {engineName[e.id]}: {engineLabel[e.status]}{e.loginMethod && ` · ${loginLabel[e.loginMethod] ?? e.loginMethod}`}
+                  {e.status === 'no credentials' && (e.id === 'codex' ? ' · run npx @openai/codex login on the Agent machine' : ' · sign in to Claude Code on the Agent machine')}
                 </p>
               ))}
           </div>

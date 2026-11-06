@@ -7,7 +7,7 @@ import { currentVersion, installVersion, lastUpdate, type AgentBuild } from '@ho
 import pkg from '../package.json' with { type: 'json' };
 import { claudeCode, type Engine } from './engine.ts';
 import { Members, type Member } from './members.ts';
-import { codex } from './codex.ts';
+import { codexForAgent } from './codex.ts';
 import { Tasks } from './tasks.ts';
 
 export interface StartedAgent {
@@ -37,7 +37,7 @@ const httpError = (status: number, message: string) => Object.assign(new Error(m
 export function startAgent(home: string, port: number, opts: AgentOptions = {}): Promise<StartedAgent> {
   const members = new Members(home);
   const engines = new Map<EngineId, Engine>([['claude-code', opts.engine ?? claudeCode]]);
-  if (!opts.engine || opts.codexEngine) engines.set('codex', opts.codexEngine ?? codex);
+  if (!opts.engine || opts.codexEngine) engines.set('codex', opts.codexEngine ?? codexForAgent(home));
   const tasks = new Tasks(home, engines, opts.completedRetentionDays ?? 30);
   tasks.purge();
   tasks.recover();
@@ -169,9 +169,10 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
       const result: AgentHello = {
         ...info(),
         member: { id: member.id, name: member.name, accessLevel: member.accessLevel, tokenId },
-        engines: await Promise.all([...engines].map(async ([id, engine]) => ({
-          id, status: (await engine.status?.()) ?? 'ready',
-        }))),
+        engines: await Promise.all([...engines].map(async ([id, engine]) => {
+          const availability = (await engine.status?.()) ?? 'ready';
+          return { id, ...(typeof availability === 'string' ? { status: availability } : availability) };
+        })),
       };
       return ok(result);
     }
@@ -180,6 +181,11 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
       if (p.permissionMode !== undefined && !permissionModes.includes(p.permissionMode)) return fail('invalid permissionMode');
       const engine = p.engine === undefined ? 'claude-code' : p.engine;
       if (!engines.has(engine)) return fail('unknown engine');
+      if (p.engine !== undefined) {
+        const availability = (await engines.get(engine)!.status?.()) ?? 'ready';
+        const status = typeof availability === 'string' ? availability : availability.status;
+        if (status !== 'ready') return fail(`Engine ${engine} is ${status}`);
+      }
       return ok(tasks.create(p.name.trim(), member, p.permissionMode ?? defaultPermissionMode, engine));
     }
     case 'task.list':

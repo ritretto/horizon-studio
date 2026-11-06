@@ -114,6 +114,35 @@ Agent запускает Claude Code через Claude Agent SDK с учётны
 
 ## OpenAI Codex
 
-Для задач **OpenAI Codex** установите [Codex CLI](https://learn.chatgpt.com/docs/cli) на машине Agent и выполните `codex login` под пользователем, от которого запущен Agent. Для удалённой машины можно использовать `codex login --device-auth`. Если CLI не виден службе или на Windows в PATH есть только npm-обёртка, задайте `HORIZON_CODEX_EXECUTABLE` с полным путём к исполняемому файлу Codex и перезапустите Agent. После входа переподключите Studio к Agent, чтобы обновить статус.
+Codex is a pinned Agent dependency (`@openai/codex@0.166.0`). The normal `npm ci` and `npm run build` install it. Agent Update includes this dependency, so a global Codex installation or a PATH override is unnecessary.
 
-В форме новой задачи выберите движок и Agent. Движок закрепляется за задачей. Agent запускает [Codex app-server](https://learn.chatgpt.com/docs/app-server) с учётными данными CLI и сохраняет ID разговора для продолжения. Для Codex используются `workspace-write` и `on-request`. В режиме «Спрашивать» Studio показывает запросы Codex на повышение разрешений для команд и изменений файлов. В режиме «Авто» Agent подтверждает эти запросы автоматически. Операции, разрешённые политикой Codex, выполняются без запроса в обоих режимах.
+On the Agent machine, sign in under the OS user that runs Agent. From the repository directory, choose one method.
+
+```sh
+npx @openai/codex login                 # ChatGPT subscription
+npx @openai/codex login --device-auth   # Headless machine
+npx @openai/codex login --with-api-key  # API key read from stdin
+```
+
+Device authentication may need to be enabled in your ChatGPT security settings. Codex manages the local credential cache. Studio does not receive the key or tokens, and the Agent service reuses this cache without requiring API-key environment variables. Reconnect Studio after login to refresh Engine status and the displayed login method.
+
+The new Task form lists both Engines with their status. Unavailable Engines are visible but disabled. The first ready Engine is selected in a fixed order, Claude Code followed by Codex. Each Task keeps its selected Engine. Existing Tasks continue to use Claude Code.
+
+| Codex Permission Mode | Approval policy | Sandbox |
+| --- | --- | --- |
+| Ask | untrusted | workspace-write |
+| Auto | never | danger-full-access |
+
+On Windows, Ask also sets `windows.sandbox = "unelevated"` for new and resumed threads. A sandbox startup error appears in the chat. Auto permits full machine access as the Agent's OS user. Treat members who can run Tasks as trusted operators; see issue #41.
+
+Codex command and file-change approval requests appear as Waiting in Studio. Allow, Always allow and Deny apply to that request or Session. A failed Engine ends the turn with an error and leaves the Task active. The next message starts a fresh process using the saved thread ID. Pausing, resuming and Agent restart recovery retain the conversation.
+
+The adapter shows completed messages and tool results. Streaming, model selection, context controls and usage panels are outside this change. See [ADR 0005](docs/adr/0005-codex-app-server.md).
+
+To regenerate the protocol declarations after an intentional Codex dependency upgrade, run the following commands.
+
+```sh
+npm run generate:codex -w @horizon/agent
+npm run typecheck
+npm test
+```

@@ -227,7 +227,7 @@ export class Session {
       if (item.kind === 'permission' && !answered.has(item.requestId))
         this.append({ kind: 'permission_answer', requestId: item.requestId, allow: false, always: false });
     this.append({ kind: 'status', status: 'interrupted' });
-    this.send(RECOVER_PROMPT);
+    this.send(this.continuation(RECOVER_PROMPT));
   }
 
   /** Отправляет сообщение; false, если Task на паузе или завершена. */
@@ -235,7 +235,15 @@ export class Session {
     if (this.task.state === 'paused' || this.task.state === 'completed') return false;
     if (this.task.engine === 'codex' && this.run && this.midTurn) throw new Error('Codex is already working');
     this.append({ kind: 'user', text });
-    this.start().send(text);
+    try {
+      this.start().send(text);
+    } catch (error) {
+      this.generation++;
+      this.run?.close();
+      this.run = undefined;
+      this.clearPermissions();
+      this.append({ kind: 'turn_end', error: error instanceof Error ? error.message : String(error) });
+    }
     return true;
   }
 
@@ -260,7 +268,7 @@ export class Session {
     if (this.stored.pausedMidTurn) {
       this.stored.pausedMidTurn = false;
       this.save();
-      this.send(CONTINUE_PROMPT);
+      this.send(this.continuation(CONTINUE_PROMPT));
     }
   }
 
@@ -285,13 +293,26 @@ export class Session {
     for (const requestId of this.pending.keys()) this.answer(requestId, false, false);
   }
 
+  private continuation(fallback: string): string {
+    if (this.stored.engineSessionId) return fallback;
+    const item = this.history(0).findLast((event) => event.item.kind === 'user')?.item;
+    return item?.kind === 'user' ? item.text : fallback;
+  }
+
   private start(): EngineRun {
     if (this.run) return this.run;
     const generation = this.generation;
     const live = () => generation === this.generation;
     this.run = this.engine({
       cwd: this.cwd,
+      permissionMode: this.task.permissionMode,
       resume: this.stored.engineSessionId,
+      onExit: () => {
+        if (!live()) return;
+        this.generation++;
+        this.run = undefined;
+        this.clearPermissions();
+      },
       onItem: (item) => {
         if (!live()) return;
         if (item.kind === 'turn_end') this.clearPermissions();
