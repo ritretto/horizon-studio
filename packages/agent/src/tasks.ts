@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { PermissionMode, SessionEvent, SessionItem, Task, TaskState } from '@horizon/protocol';
+import type { EngineId, PermissionMode, SessionEvent, SessionItem, Task, TaskState } from '@horizon/protocol';
 import type { Engine, EngineRun } from './engine.ts';
 import type { Member } from './members.ts';
 
@@ -22,6 +22,11 @@ const RECOVER_PROMPT =
 const CONTINUE_PROMPT =
   '[HorizonStudio] Task продолжена после паузы. Твой предыдущий ход был прерван — проверь состояние и продолжай с того места, где остановился.';
 
+const unavailableEngine: Engine = ({ onItem }) => ({
+  send: () => onItem({ kind: 'turn_end', error: 'Task engine is unavailable on Agent' }),
+  close: () => {},
+});
+
 type Listener = (e: SessionEvent) => void;
 
 /**
@@ -32,28 +37,29 @@ export class Tasks {
   private dir: string;
   private tasks = new Map<string, StoredTask>();
   private sessions = new Map<string, Session>();
-  private engine: Engine;
+  private engines: ReadonlyMap<EngineId, Engine>;
   private retentionMs: number;
   /** Изменился список Task или состояние одной из них. */
   onChange = () => {};
 
-  constructor(home: string, engine: Engine, retentionDays: number) {
+  constructor(home: string, engines: ReadonlyMap<EngineId, Engine>, retentionDays: number) {
     this.dir = join(home, 'tasks');
-    this.engine = engine;
+    this.engines = engines;
     this.retentionMs = retentionDays * 24 * 60 * 60 * 1000;
     mkdirSync(this.dir, { recursive: true });
     for (const id of readdirSync(this.dir)) {
       const t: StoredTask = JSON.parse(readFileSync(join(this.dir, id, 'task.json'), 'utf8'));
+      t.engine ??= 'claude-code';
       this.tasks.set(t.id, t);
     }
   }
 
-  create(name: string, owner: Member, permissionMode: PermissionMode): Task {
+  create(name: string, owner: Member, permissionMode: PermissionMode, engine: EngineId): Task {
     const task: StoredTask = {
       id: randomUUID(),
       name,
       ownerId: owner.id,
-      engine: 'claude-code',
+      engine,
       permissionMode,
       state: 'active',
       createdAt: new Date().toISOString(),
@@ -167,7 +173,7 @@ export class Tasks {
     let s = this.sessions.get(sessionId);
     if (!s) {
       const stored = task.sessions.find((x) => x.id === sessionId)!;
-      s = new Session(this.dir, task, stored, this.engine, () => this.save(task));
+      s = new Session(this.dir, task, stored, this.engines.get(task.engine) ?? unavailableEngine, () => this.save(task));
       this.sessions.set(sessionId, s);
     }
     return s;
@@ -221,14 +227,23 @@ export class Session {
       if (item.kind === 'permission' && !answered.has(item.requestId))
         this.append({ kind: 'permission_answer', requestId: item.requestId, allow: false, always: false });
     this.append({ kind: 'status', status: 'interrupted' });
-    this.send(RECOVER_PROMPT);
+    this.send(this.continuation(RECOVER_PROMPT));
   }
 
   /** Отправляет сообщение; false, если Task на паузе или завершена. */
   send(text: string): boolean {
     if (this.task.state === 'paused' || this.task.state === 'completed') return false;
+    if (this.task.engine === 'codex' && this.run && this.midTurn) throw new Error('Codex is already working');
     this.append({ kind: 'user', text });
-    this.start().send(text);
+    try {
+      this.start().send(text);
+    } catch (error) {
+      this.generation++;
+      this.run?.close();
+      this.run = undefined;
+      this.clearPermissions();
+      this.append({ kind: 'turn_end', error: error instanceof Error ? error.message : String(error) });
+    }
     return true;
   }
 
@@ -238,8 +253,7 @@ export class Session {
     this.run?.close();
     this.run = undefined;
     // Процесса Engine больше нет — висящие запросы разрешений снимаются.
-    for (const [requestId] of this.pending) this.append({ kind: 'permission_answer', requestId, allow: false, always: false });
-    this.pending.clear();
+    this.clearPermissions();
     if (!status) return;
     this.stored.pausedMidTurn = this.midTurn;
     this.append({ kind: 'status', status });
@@ -254,7 +268,7 @@ export class Session {
     if (this.stored.pausedMidTurn) {
       this.stored.pausedMidTurn = false;
       this.save();
-      this.send(CONTINUE_PROMPT);
+      this.send(this.continuation(CONTINUE_PROMPT));
     }
   }
 
@@ -275,19 +289,42 @@ export class Session {
     return () => this.listeners.delete(listener);
   }
 
+  private clearPermissions() {
+    for (const requestId of this.pending.keys()) this.answer(requestId, false, false);
+  }
+
+  private continuation(fallback: string): string {
+    if (this.stored.engineSessionId) return fallback;
+    const item = this.history(0).findLast((event) => event.item.kind === 'user')?.item;
+    return item?.kind === 'user' ? item.text : fallback;
+  }
+
   private start(): EngineRun {
     if (this.run) return this.run;
     const generation = this.generation;
     const live = () => generation === this.generation;
     this.run = this.engine({
       cwd: this.cwd,
+      permissionMode: this.task.permissionMode,
       resume: this.stored.engineSessionId,
-      onItem: (item) => live() && this.append(item),
+      onExit: () => {
+        if (!live()) return;
+        this.generation++;
+        this.run = undefined;
+        this.clearPermissions();
+      },
+      onItem: (item) => {
+        if (!live()) return;
+        if (item.kind === 'turn_end') this.clearPermissions();
+        this.append(item);
+      },
       onEngineSessionId: (id) => {
+        if (!live()) return;
         this.stored.engineSessionId = id;
         this.save();
       },
       askPermission: (req) => {
+        if (!live()) return Promise.resolve({ allow: false, always: false });
         if (this.task.permissionMode === 'auto') return Promise.resolve({ allow: true, always: false });
         const requestId = randomUUID();
         this.append({ kind: 'permission', requestId, ...req });

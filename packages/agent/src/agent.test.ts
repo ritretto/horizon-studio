@@ -1,19 +1,65 @@
 import { test } from 'node:test';
+import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import WebSocket from 'ws';
 import type { SessionEvent, Task } from '@horizon/protocol';
 import { startAgent } from './agent.ts';
 import type { Engine } from './engine.ts';
+import { createCodexEngine } from './codex.ts';
 
 function connect(port: number, token: string) {
   return new Promise<WebSocket>((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { authorization: `Bearer ${token}` } });
     ws.once('open', () => resolve(ws));
     ws.once('unexpected-response', (_req, res) => reject(new Error(String(res.statusCode))));
+  });
+}
+
+for (const engineId of ['claude-code', 'codex'] as const) {
+  test(`${engineId}: a dead Engine is replaced on the next user message`, async (t) => {
+    let launches = 0;
+    const dying: Engine = (opts) => {
+      const launch = ++launches;
+      let dead = false;
+      return {
+        send() {
+          if (dead) return;
+          setImmediate(() => {
+            opts.onEngineSessionId('saved-thread');
+            if (launch === 1) {
+              dead = true;
+              opts.onItem({ kind: 'turn_end', error: 'process exited' });
+              opts.onExit();
+            } else {
+              assert.equal(opts.resume, 'saved-thread');
+              opts.onItem({ kind: 'text', text: 'restarted' });
+              opts.onItem({ kind: 'turn_end' });
+            }
+          });
+        },
+        close() { dead = true; },
+      };
+    };
+    const home = mkdtempSync(join(tmpdir(), 'horizon-exit-test-'));
+    const agent = await startAgent(home, 0, { engine: dying, codexEngine: dying });
+    t.after(() => agent.stop());
+    const c = client(await connect((agent.server.address() as AddressInfo).port, agent.adminToken!));
+    t.after(() => c.close());
+    const task: Task = await c.call('task.create', { name: 'Crash recovery', engine: engineId });
+    const sessionId = task.sessions[0].id;
+    await c.call('session.subscribe', { sessionId });
+    await c.call('session.send', { sessionId, text: 'first' });
+    await c.until(2);
+    await c.call('session.send', { sessionId, text: 'retry' });
+    assert.equal(launches, 2, 'must not send the retry into a dead Engine');
+    const events = await c.until(5);
+    assert.deepEqual(events[3].item, { kind: 'text', text: 'restarted' });
+    assert.equal((await c.call('task.list'))[0].state, 'active');
   });
 }
 
@@ -69,9 +115,15 @@ function client(ws: WebSocket) {
       ws.send(JSON.stringify({ type: 'request', id, method, params }));
     }).then((m) => m.result);
   const until = async (n: number) => {
-    while (events.length < n) await new Promise((r) => setTimeout(r, 5));
+    const deadline = Date.now() + 5_000;
+    while (events.length < n) {
+      assert.ok(Date.now() < deadline, `Timed out waiting for ${n} Session events, received ${events.length}`);
+      await new Promise((r) => setTimeout(r, 5));
+    }
     return events;
   };
+
+
   return { call, until, close: () => ws.close() };
 }
 
@@ -359,4 +411,167 @@ test('Agent Update: PUT /update ставит сборку и просит Launch
   });
   assert.equal(r.status, 409, 'без Launcher обновление невозможно');
   plain.stop();
+});
+
+test('Codex: выбор движка, поток событий, разрешения и продолжение после перезапуска', { timeout: 15_000 }, async (t) => {
+  const script = `
+    const { createInterface } = require('node:readline');
+    const assert = require('node:assert/strict');
+    const write = (message) => console.log(JSON.stringify(message));
+    const notify = (method, params) => write({ method, params: { threadId: 'codex-thread', ...params } });
+    let initialized = false;
+    let resumed = false;
+    createInterface({ input: process.stdin }).on('line', (line) => {
+      const { id, method, params, result } = JSON.parse(line);
+      const reply = (result) => write({ id, result });
+      switch (method) {
+        case 'initialize':
+          assert.equal(params.clientInfo.name, 'horizon_studio');
+          return reply({});
+        case 'initialized':
+          initialized = true;
+          return;
+        case 'account/read':
+          assert.equal(initialized, true);
+          return reply({ account: { type: 'chatgpt' }, requiresOpenaiAuth: true });
+        case 'thread/resume':
+          assert.equal(params.threadId, 'codex-thread');
+          resumed = true;
+        case 'thread/start':
+          assert.equal(initialized, true);
+          assert.equal(params.approvalPolicy, 'untrusted');
+          assert.equal(params.sandbox, 'workspace-write');
+          return reply({ thread: { id: 'codex-thread' } });
+        case 'turn/start':
+          assert.equal(params.threadId, 'codex-thread');
+          reply({ turn: { id: 'turn' } });
+          if (resumed) {
+            notify('item/agentMessage/delta', { itemId: 'answer2', delta: 'ignored' });
+            notify('item/completed', { item: { type: 'agentMessage', id: 'answer2', text: 'resumed' } });
+            return notify('turn/completed', { turn: { status: 'completed' } });
+          }
+          notify('item/started', { item: { type: 'commandExecution', id: 'tool', command: 'ls' } });
+          return write({ id: 'approval', method: 'item/commandExecution/requestApproval', params: {
+            threadId: 'codex-thread', itemId: 'tool', availableDecisions: ['accept', 'acceptForSession', 'decline'],
+          } });
+        default:
+          assert.equal(id, 'approval');
+          notify('item/completed', { item: { type: 'commandExecution', id: 'tool', status: 'completed', exitCode: 0 } });
+          notify('item/agentMessage/delta', { itemId: 'answer', delta: result.decision });
+          notify('item/completed', { item: { type: 'agentMessage', id: 'answer', text: result.decision } });
+          return notify('turn/completed', { turn: { status: 'completed' } });
+      }
+    });
+  `;
+  const codexEngine = createCodexEngine((cwd) => spawn(process.execPath, ['-e', script], { cwd }));
+  const home = mkdtempSync(join(tmpdir(), 'horizon-codex-test-'));
+  const a1 = await startAgent(home, 0, { engine: echo, codexEngine });
+  t.after(() => a1.stop());
+  const token = a1.adminToken!;
+  const c1 = client(await connect((a1.server.address() as AddressInfo).port, token));
+  t.after(() => c1.close());
+  assert.deepEqual((await c1.call('agent.info')).engines, [
+    { id: 'claude-code', status: 'ready' }, { id: 'codex', status: 'ready', loginMethod: 'chatgpt' },
+  ]);
+  assert.equal((await c1.call('task.create', { name: 'default' })).engine, 'claude-code');
+  assert.equal(await c1.call('task.create', { name: 'invalid', engine: 'invalid' }), undefined);
+  const task: Task = await c1.call('task.create', { name: 'Codex', engine: 'codex', permissionMode: 'ask' });
+  assert.equal(task.engine, 'codex');
+  const sessionId = task.sessions[0].id;
+  await c1.call('session.subscribe', { sessionId });
+  await c1.call('session.send', { sessionId, text: 'first' });
+  const events = await c1.until(2);
+  const permission = events[1].item;
+  assert.equal(permission.kind, 'permission');
+  assert.equal(await c1.call('session.send', { sessionId, text: 'while busy' }), undefined);
+  await c1.call('session.answer', { sessionId, requestId: permission.requestId, allow: true, always: true });
+  await c1.until(7);
+  assert.deepEqual(events.map(({ item }) => item.kind),
+    ['user', 'permission', 'permission_answer', 'tool', 'tool_result', 'text', 'turn_end']);
+  assert.deepEqual(events[5].item, { kind: 'text', text: 'acceptForSession' });
+  await c1.call('session.send', { sessionId, text: 'second' });
+  await c1.until(9);
+  const nextPermission = events[8].item;
+  assert.equal(nextPermission.kind, 'permission');
+  await c1.call('session.answer', { sessionId, requestId: nextPermission.requestId, allow: false });
+  await c1.until(14);
+  assert.deepEqual(events[12].item, { kind: 'text', text: 'decline' });
+  c1.close();
+  a1.stop();
+
+  const a2 = await startAgent(home, 0, { engine: echo, codexEngine });
+  t.after(() => a2.stop());
+  const c2 = client(await connect((a2.server.address() as AddressInfo).port, token));
+  t.after(() => c2.close());
+  assert.equal((await c2.call('task.list')).find((entry: Task) => entry.id === task.id).engine, 'codex');
+  await c2.call('session.subscribe', { sessionId, fromSeq: 14 });
+  await c2.call('session.send', { sessionId, text: 'second' });
+  const resumed = await c2.until(3);
+  assert.deepEqual(resumed[1].item, { kind: 'text', text: 'resumed' });
+  assert.deepEqual(resumed[2].item, { kind: 'turn_end' });
+});
+
+test('Codex app-server crash is resumed by Session on the next message', { timeout: 10_000 }, async (t) => {
+  let launches = 0;
+  const fixture = fileURLToPath(new URL('./fixtures/codex-server.mjs', import.meta.url));
+  const codexEngine = Object.assign(createCodexEngine(() =>
+    spawn(process.execPath, [fixture, launches++ === 0 ? 'crash' : 'completed'])), {
+    status: async () => 'ready' as const,
+  });
+  const home = mkdtempSync(join(tmpdir(), 'horizon-process-exit-'));
+  const agent = await startAgent(home, 0, { engine: echo, codexEngine });
+  t.after(() => agent.stop());
+  const c = client(await connect((agent.server.address() as AddressInfo).port, agent.adminToken!));
+  t.after(() => c.close());
+  const task: Task = await c.call('task.create', { name: 'Real subprocess crash', engine: 'codex' });
+  const sessionId = task.sessions[0].id;
+  await c.call('session.subscribe', { sessionId });
+  await c.call('session.send', { sessionId, text: 'crash' });
+  const events = await c.until(2);
+  assert.equal(events[1].item.kind, 'turn_end');
+  await c.call('session.send', { sessionId, text: 'retry' });
+  await c.until(5);
+  assert.equal(launches, 2);
+  assert.deepEqual(events[3].item, { kind: 'text', text: 'completed answer' });
+});
+
+
+test('pause before Engine thread creation replays the original input', async (t) => {
+  const prompts: string[] = [];
+  const slow: Engine = () => ({ send(text) { prompts.push(text); }, close() {} });
+  const home = mkdtempSync(join(tmpdir(), 'horizon-early-pause-'));
+  const agent = await startAgent(home, 0, { engine: slow, codexEngine: slow });
+  t.after(() => agent.stop());
+  const c = client(await connect((agent.server.address() as AddressInfo).port, agent.adminToken!));
+  t.after(() => c.close());
+  const task: Task = await c.call('task.create', { name: 'Early pause', engine: 'codex' });
+  await c.call('session.send', { sessionId: task.sessions[0].id, text: 'original task instructions' });
+  await c.call('task.pause', { taskId: task.id });
+  await c.call('task.resume', { taskId: task.id });
+  assert.deepEqual(prompts, ['original task instructions', 'original task instructions']);
+});
+
+
+test('Task creation defaults to the first ready Engine and rejects unavailable Engines', async (t) => {
+  let claudeReady = false;
+  let codexReady = true;
+  const claude = Object.assign((opts: Parameters<Engine>[0]) => echo(opts), {
+    status: async () => claudeReady ? 'ready' as const : 'no credentials' as const,
+  });
+  const codexEngine = Object.assign((opts: Parameters<Engine>[0]) => echo(opts), {
+    status: async () => codexReady ? 'ready' as const : 'not installed' as const,
+  });
+  const home = mkdtempSync(join(tmpdir(), 'horizon-engine-choice-'));
+  const agent = await startAgent(home, 0, { engine: claude, codexEngine });
+  t.after(() => agent.stop());
+  const c = client(await connect((agent.server.address() as AddressInfo).port, agent.adminToken!));
+  t.after(() => c.close());
+  assert.equal(await c.call('task.create', { name: 'Explicit unavailable', engine: 'claude-code' }), undefined);
+  assert.equal((await c.call('task.create', { name: 'Default Codex' })).engine, 'codex');
+  claudeReady = true;
+  assert.equal((await c.call('task.create', { name: 'Default Claude' })).engine, 'claude-code');
+  claudeReady = false;
+  codexReady = false;
+  assert.equal(await c.call('task.create', { name: 'None ready' }), undefined);
+  assert.equal((await c.call('task.list')).length, 2);
 });

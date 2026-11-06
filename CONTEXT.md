@@ -76,6 +76,10 @@ _Avoid_: ИИ-агент, Provider, Backend, модель
 Учётные данные, с которыми Session запускает Engine (подписка или API-ключ). Принадлежат паре Member + Engine и хранятся на Agent (настраиваются через Studio); если у Member их нет, используются общие учётные данные Agent, если admin их разрешил.
 _Avoid_: ключи, аккаунт ИИ, логин
 
+Current implementation for Claude Code and Codex uses shared credentials configured on the Agent machine under its OS user. Per-Member credentials and login from Studio are future work. Codex is installed as a pinned Agent dependency and updated through Agent Update. Run `npx @openai/codex login` for ChatGPT, `npx @openai/codex login --device-auth` on a headless machine, or `npx @openai/codex login --with-api-key` with the key on stdin. Studio displays readiness and the login method from `account/read`. The credential cache stays on the Agent machine.
+
+A Task selects Claude Code or Codex at creation and keeps that Engine. Existing Tasks use Claude Code. Engine process failure ends the current turn with an error and leaves the Task active. The next user message starts a new process and resumes the saved conversation. This differs from recovery after an Agent restart, which automatically continues a previously interrupted Session. See [ADR 0005](docs/adr/0005-codex-app-server.md) for Codex permission modes and protocol handling.
+
 **Session**:
 Конкретный запущенный экземпляр Engine внутри Task, со своей консолью и историей. Живёт на Agent независимо от подключения Studio и переживает перезапуск Agent.
 _Avoid_: ИИ-агент, процесс, инстанс
