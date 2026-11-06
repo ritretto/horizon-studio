@@ -285,6 +285,7 @@ function App() {
             )}
             {!agentOnline && <p className="warn">Agent недоступен — Session продолжает работать на нём, история подгрузится после переподключения.</p>}
             <Chat
+              key={sessionId}
               events={events[sessionId] ?? []}
               state={state ?? 'active'}
               engine={task.engine}

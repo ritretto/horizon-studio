@@ -14,8 +14,26 @@ type Message = {
 
 type Launch = (cwd?: string) => ChildProcessWithoutNullStreams;
 
+// A standalone app-server must not reuse the desktop app's launch context.
+// Keep user configuration and credentials such as CODEX_HOME and CODEX_ACCESS_TOKEN.
+export function codexEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env = { ...source };
+  const internal = new Set([
+    'CODEX_WINDOWS_REGISTERED_CORE', 'CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY',
+    'CODEX_PERMISSION_PROFILE', 'CODEX_SESSION_ID', 'CODEX_THREAD_ID', 'CODEX_TOOL_CALL_ID',
+    'CODEX_TASK_WORKSPACE_VERIFYING_IDENTITY', 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE',
+    'CODEX_MCP_NODE_PATH', 'CODEX_TECTONIC_PATH', 'CODEX_SHELL',
+  ]);
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('CODEX_APP_') || internal.has(key)) delete env[key];
+  }
+  return env;
+}
+
 const launchCodex: Launch = (cwd) =>
-  spawn(process.env.HORIZON_CODEX_EXECUTABLE || 'codex', ['app-server', '--listen', 'stdio://'], { cwd, windowsHide: true });
+  spawn(process.env.HORIZON_CODEX_EXECUTABLE || 'codex', ['app-server', '--listen', 'stdio://'], {
+    cwd, windowsHide: true, env: codexEnvironment(),
+  });
 
 class AppServer {
   private child: ChildProcessWithoutNullStreams;
@@ -175,7 +193,13 @@ export function createCodexEngine(launch: Launch): Engine {
           opts.onItem({ kind: 'turn_end', error: message });
         };
         const existing = rpc;
-        const active = rpc ??= connect(launch, opts, fail);
+        let active: AppServer;
+        try {
+          active = rpc ??= connect(launch, opts, fail);
+        } catch (error) {
+          opts.onItem({ kind: 'turn_end', error: error instanceof Error ? error.message : String(error) });
+          return;
+        }
         void (async () => {
           if (!existing) {
             await active.initialize();
@@ -201,17 +225,18 @@ export function createCodexEngine(launch: Launch): Engine {
 
   engine.status = async () => {
     let missing = false;
-    const rpc = new AppServer(launch, undefined, () => {}, (error) => {
-      missing = (error as NodeJS.ErrnoException).code === 'ENOENT';
-    });
+    let rpc: AppServer | undefined;
     try {
+      rpc = new AppServer(launch, undefined, () => {}, (error) => {
+        missing = (error as NodeJS.ErrnoException).code === 'ENOENT';
+      });
       await rpc.initialize();
       const { account, requiresOpenaiAuth } = await rpc.request('account/read', { refreshToken: false });
       return account || !requiresOpenaiAuth ? 'ready' : 'no credentials';
     } catch {
       return missing ? 'not installed' : 'unavailable';
     } finally {
-      rpc.close();
+      rpc?.close();
     }
   };
   return engine;
