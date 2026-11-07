@@ -22,10 +22,9 @@ const RECOVER_PROMPT =
 const CONTINUE_PROMPT =
   '[HorizonStudio] The Task was resumed after a pause. Your previous turn was interrupted. Check the state and continue from where you stopped.';
 
-const unavailableEngine: Engine = ({ onItem }) => ({
-  send: () => onItem({ kind: 'turn_end', error: 'Task engine is unavailable on Agent' }),
-  close: () => {},
-});
+const unavailableEngine = (id: EngineId): Engine => () => {
+  throw new Error(`This Agent build does not support the Task's Engine "${id}". Install an Agent Update that supports this Engine.`);
+};
 
 type Listener = (e: SessionEvent) => void;
 
@@ -173,7 +172,7 @@ export class Tasks {
     let s = this.sessions.get(sessionId);
     if (!s) {
       const stored = task.sessions.find((x) => x.id === sessionId)!;
-      s = new Session(this.dir, task, stored, this.engines.get(task.engine) ?? unavailableEngine, () => this.save(task));
+      s = new Session(this.dir, task, stored, this.engines.get(task.engine) ?? unavailableEngine(task.engine), () => this.save(task));
       this.sessions.set(sessionId, s);
     }
     return s;
@@ -227,14 +226,20 @@ export class Session {
       if (item.kind === 'permission' && !answered.has(item.requestId))
         this.append({ kind: 'permission_answer', requestId: item.requestId, allow: false, always: false });
     this.append({ kind: 'status', status: 'interrupted' });
-    this.send(this.continuation(RECOVER_PROMPT));
+    this.continueTurn(RECOVER_PROMPT);
   }
 
   /** Sends a message; false if the Task is paused or completed. */
   send(text: string): boolean {
     if (this.task.state === 'paused' || this.task.state === 'completed') return false;
-    if (this.task.engine === 'codex' && this.run && this.midTurn) throw new Error('Codex is already working');
+    if (this.task.engine === 'codex' && this.run && this.midTurn)
+      throw new Error('Codex is working. Wait for the turn to finish or pause the Task.');
     this.append({ kind: 'user', text });
+    this.dispatch(text);
+    return true;
+  }
+
+  private dispatch(text: string) {
     try {
       this.start().send(text);
     } catch (error) {
@@ -244,7 +249,6 @@ export class Session {
       this.clearPermissions();
       this.append({ kind: 'turn_end', error: error instanceof Error ? error.message : String(error) });
     }
-    return true;
   }
 
   /** Stops the Engine; with a status, records it in the log (pause or completion). */
@@ -268,7 +272,7 @@ export class Session {
     if (this.stored.pausedMidTurn) {
       this.stored.pausedMidTurn = false;
       this.save();
-      this.send(this.continuation(CONTINUE_PROMPT));
+      this.continueTurn(CONTINUE_PROMPT);
     }
   }
 
@@ -293,10 +297,11 @@ export class Session {
     for (const requestId of this.pending.keys()) this.answer(requestId, false, false);
   }
 
-  private continuation(fallback: string): string {
-    if (this.stored.engineSessionId) return fallback;
+  private continueTurn(fallback: string) {
+    if (this.stored.engineSessionId) return void this.send(fallback);
     const item = this.history(0).findLast((event) => event.item.kind === 'user')?.item;
-    return item?.kind === 'user' ? item.text : fallback;
+    if (item?.kind === 'user') this.dispatch(item.text);
+    else this.send(fallback);
   }
 
   private start(): EngineRun {
@@ -307,6 +312,8 @@ export class Session {
       cwd: this.cwd,
       permissionMode: this.task.permissionMode,
       resume: this.stored.engineSessionId,
+      initialInput: this.task.engine === 'codex' ? this.history(0)
+        .flatMap(({ item }) => item.kind === 'user' ? [item.text] : []).join('\n\n') : undefined,
       onExit: () => {
         if (!live()) return;
         this.generation++;

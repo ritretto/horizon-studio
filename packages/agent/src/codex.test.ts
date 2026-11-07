@@ -106,6 +106,15 @@ for (const kind of ['command', 'file'] as const) {
         askPermission: async (request) => {
           requests++;
           assert.equal(request.reason, 'test approval');
+          if (kind === 'file') {
+            const input = request.input as { paths: string[]; changes: unknown[]; command?: string };
+            assert.deepEqual(input.paths, ['/task/index.html', '/task/old.css', '/task/site.css']);
+            assert.deepEqual(input.changes, [
+              { path: '/task/index.html', kind: { type: 'add' }, diff: '<h1>Hello</h1>\n' },
+              { path: '/task/old.css', kind: { type: 'update', move_path: '/task/site.css' }, diff: '-old\n+new\n' },
+            ]);
+            assert.equal(input.command, undefined, 'file approvals do not carry a command');
+          }
           return { allow, always };
         },
       });
@@ -119,6 +128,36 @@ for (const kind of ['command', 'file'] as const) {
     });
   }
 }
+
+test('idle app-server exit signals onExit without an extra turn_end', { timeout: 5_000 }, async (t) => {
+  let exit!: () => void;
+  const exited = new Promise<void>((resolve) => { exit = resolve; });
+  const result = turn(engineFor('idle-exit'), { onExit: exit });
+  t.after(() => result.run.close());
+  await result.done;
+  await exited;
+  assert.deepEqual(result.items, [{ kind: 'text', text: 'completed answer' }, { kind: 'turn_end' }]);
+});
+
+test('file approvals without matching item details fail without asking for blind approval', { timeout: 5_000 }, async (t) => {
+  let requests = 0;
+  const result = turn(engineFor('approval-file-missing'), {
+    askPermission: async () => { requests++; return { allow: true, always: false }; },
+  });
+  t.after(() => result.run.close());
+  await result.done;
+  assert.equal(requests, 0);
+  assert.deepEqual(result.items, [{ kind: 'turn_end', error: 'Codex file change details are unavailable. Send a new message to retry.' }]);
+  assert.equal(result.exited, true);
+});
+
+test('resume errors other than a missing rollout do not start a new thread', { timeout: 5_000 }, async (t) => {
+  const result = turn(engineFor('resume-error'), { resume: 'thread-1' });
+  t.after(() => result.run.close());
+  await result.done;
+  assert.deepEqual(result.items, [{ kind: 'turn_end', error: 'Unable to read rollout: permission denied' }]);
+  assert.equal(result.exited, true);
+});
 
 test('synchronous launch errors finish the turn and signal Engine exit', async () => {
   const engine = createCodexEngine(() => { throw new Error('Invalid launch configuration'); });

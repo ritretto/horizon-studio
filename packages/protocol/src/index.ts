@@ -81,7 +81,6 @@ export type SessionItem =
   | { kind: 'user'; text: string }
   | { kind: 'text'; text: string }
   /** Compatibility with logs written by the initial Codex preview. New turns use completed text items. */
-  | { kind: 'text_delta'; id: string; text: string }
   | { kind: 'tool'; id: string; name: string; input: unknown }
   | { kind: 'tool_result'; id: string; output: string; isError: boolean }
   | { kind: 'permission'; requestId: string; tool: string; input: unknown; reason?: string }

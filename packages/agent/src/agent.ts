@@ -184,7 +184,7 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
       const candidates = p.engine === undefined ? [...engines.keys()] : [p.engine];
       for (const id of candidates) {
         const engine = engines.get(id);
-        if (!engine) return fail('unknown engine');
+        if (!engine) return fail(`This Agent build does not support Engine "${id}". Install an Agent Update that supports this Engine.`);
         const { status } = await availability(engine);
         if (status === 'ready') return ok(tasks.create(p.name.trim(), member, p.permissionMode ?? defaultPermissionMode, id));
         if (p.engine !== undefined) return fail(`Engine ${id} is ${status}`);

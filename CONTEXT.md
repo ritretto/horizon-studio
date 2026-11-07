@@ -45,7 +45,7 @@ The Agent's working directory (set at startup or in the config), where it keeps 
 _Avoid_: data dir, agent workdir
 
 **Task**:
-A unit of a Member's work on an Agent. It belongs to one Member, contains one or more Sessions, and can be paused, completed and later deleted. Access is checked at the Task level. It sets the default Engine; in the simple case it has one Session on that Engine, and in the complex case each Session is configured separately.
+A unit of a Member's work on an Agent. It belongs to one Member, contains one or more Sessions, and can be paused, completed and later deleted. Access is checked at the Task level. In the current implementation a Task selects Claude Code or Codex at creation and keeps that Engine; existing Tasks use Claude Code. Per-Session Engine configuration in a multi-Session Task is future work.
 _Avoid_: session, scope, job, workspace
 
 **Paused** (Task):
@@ -78,18 +78,18 @@ _Avoid_: keys, AI account, login
 
 Current implementation for Claude Code and Codex uses shared credentials configured on the Agent machine under its OS user. Per-Member credentials and login from Studio are future work. Codex is installed as a pinned Agent dependency and updated through Agent Update. Run `npx @openai/codex login` for ChatGPT, `npx @openai/codex login --device-auth` on a headless machine, or `npx @openai/codex login --with-api-key` with the key on stdin. Studio displays readiness and the login method from `account/read`. The credential cache stays on the Agent machine.
 
-A Task selects Claude Code or Codex at creation and keeps that Engine. Existing Tasks use Claude Code. Engine process failure ends the current turn with an error and leaves the Task active. The next user message starts a new process and resumes the saved conversation. This differs from recovery after an Agent restart, which automatically continues a previously interrupted Session. See [ADR 0005](docs/adr/0005-codex-app-server.md) for Codex permission modes and protocol handling.
-
 **Session**:
 A specific running instance of an Engine inside a Task, with its own console and history. It lives on the Agent regardless of Studio's connection and survives an Agent restart.
 _Avoid_: AI agent, process, instance
+
+Engine process failure ends an active turn with an error and leaves the Task active. An idle Engine exit only clears the process reference. The next user message starts a new process and resumes the saved conversation. See [ADR 0005](docs/adr/0005-codex-app-server.md) for Codex permission modes and protocol handling.
 
 **Waiting** (Session):
 The state of a Session when the Engine is waiting for the user to answer a question or a permission request.
 _Avoid_: blocked, idle
 
 **Interrupted** (Session):
-The state of a Session whose process died without the user asking for it (a crash, a reboot). The Agent automatically tries to continue it.
+The state recorded when an Agent restart (a crash, a reboot or an Agent Update) finds a Session interrupted mid-turn. The Agent automatically tries to continue that Session. An Engine failure while the Agent stays running does not trigger automatic continuation; it waits for the next user message. Paused and Completed Tasks do not continue after an Agent restart.
 _Avoid_: crashed, failed
 
 **Role**:

@@ -29,15 +29,6 @@ export function Chat({ events, state, engine, engineName, onSend, onAnswer }: Pr
   const busy = !stopped && !!last && last.item.kind !== 'turn_end';
 
   const inputDisabled = stopped || (engine === 'codex' && busy);
-  const display: { seq: number; item: SessionItem }[] = [];
-  for (const { seq, item } of events) {
-    const previous = display.at(-1)?.item;
-    if (item.kind === 'text_delta' && previous?.kind === 'text_delta' && previous.id === item.id) {
-      previous.text += item.text;
-    } else {
-      display.push({ seq, item: item.kind === 'text_delta' ? { ...item } : item });
-    }
-  }
 
   // The braces are required: in new browsers scrollIntoView returns a Promise, which React would take for a cleanup.
   useEffect(() => {
@@ -54,7 +45,7 @@ export function Chat({ events, state, engine, engineName, onSend, onAnswer }: Pr
     <section className="chat">
       <div className="items">
         {events.length === 0 && <p className="muted">Describe what needs to be done.</p>}
-        {display.map((e) => (
+        {events.map((e) => (
           <Item key={e.seq} item={e.item} results={results} answers={answers} engineName={engineName} onAnswer={onAnswer} />
         ))}
         {stopped ? (
@@ -99,7 +90,6 @@ function Item({ item, results, answers, engineName, onAnswer }: ItemProps) {
   switch (item.kind) {
     case 'user':
       return <div className="msg user">{item.text}</div>;
-    case 'text_delta':
     case 'text':
       return <div className="msg">{item.text}</div>;
     case 'tool': {
@@ -162,6 +152,7 @@ const statusLabel = {
 
 function summary(input: unknown): string {
   const v = input as Record<string, unknown>;
-  const s = String(v?.command ?? v?.file_path ?? v?.pattern ?? v?.url ?? '');
+  const paths = Array.isArray(v?.paths) ? v.paths.join(', ') : undefined;
+  const s = String(v?.command ?? paths ?? v?.file_path ?? v?.pattern ?? v?.url ?? '');
   return s.length > 80 ? '…' + s.slice(-80) : s; // the end of a path matters most
 }

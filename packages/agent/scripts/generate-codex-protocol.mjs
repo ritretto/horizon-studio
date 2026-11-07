@@ -16,7 +16,7 @@ if (result.status !== 0) throw new Error('Codex protocol generation failed');
 const roots = ['RequestId', 'InitializeParams', 'InitializeResponse', 'ServerRequest',
   'v2/GetAccountParams', 'v2/GetAccountResponse', 'v2/ThreadStartParams', 'v2/ThreadStartResponse',
   'v2/ThreadResumeParams', 'v2/ThreadResumeResponse', 'v2/TurnStartParams', 'v2/TurnStartResponse',
-  'v2/ItemCompletedNotification', 'v2/TurnCompletedNotification',
+  'v2/ItemStartedNotification', 'v2/ItemCompletedNotification', 'v2/TurnCompletedNotification',
   'v2/CommandExecutionRequestApprovalResponse', 'v2/FileChangeRequestApprovalResponse'];
 const visited = new Set();
 function copy(relative) {

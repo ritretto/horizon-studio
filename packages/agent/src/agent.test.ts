@@ -515,7 +515,7 @@ test('Codex app-server crash is resumed by Session on the next message', { timeo
   let launches = 0;
   const fixture = fileURLToPath(new URL('./fixtures/codex-server.mjs', import.meta.url));
   const codexEngine = Object.assign(createCodexEngine(() =>
-    spawn(process.execPath, [fixture, launches++ === 0 ? 'crash' : 'completed'])), {
+    spawn(process.execPath, [fixture, launches++ === 0 ? 'crash' : 'missing-rollout'])), {
     status: async () => 'ready' as const,
   });
   const home = mkdtempSync(join(tmpdir(), 'horizon-process-exit-'));
@@ -532,24 +532,63 @@ test('Codex app-server crash is resumed by Session on the next message', { timeo
   await c.call('session.send', { sessionId, text: 'retry' });
   await c.until(5);
   assert.equal(launches, 2);
-  assert.deepEqual(events[3].item, { kind: 'text', text: 'completed answer' });
+  assert.deepEqual(events[3].item, { kind: 'text', text: 'crash\n\nretry' }, 'replay the original instructions and the retry');
+  const stored = JSON.parse(readFileSync(join(home, 'tasks', task.id, 'task.json'), 'utf8'));
+  assert.equal(stored.sessions[0].engineSessionId, 'thread-recovered');
+  assert.deepEqual(events.flatMap(({ item }) => item.kind === 'user' ? [item.text] : []), ['crash', 'retry']);
+  await c.call('session.send', { sessionId, text: 'next message' });
+  await c.until(8);
+  assert.deepEqual(events[6].item, { kind: 'text', text: 'next message' }, 'restore input only for the replacement thread');
+  assert.equal(launches, 2);
 });
 
 
-test('pause before Engine thread creation replays the original input', async (t) => {
-  const prompts: string[] = [];
-  const slow: Engine = () => ({ send(text) { prompts.push(text); }, close() {} });
-  const home = mkdtempSync(join(tmpdir(), 'horizon-early-pause-'));
-  const agent = await startAgent(home, 0, { engine: slow, codexEngine: slow });
-  t.after(() => agent.stop());
-  const c = client(await connect((agent.server.address() as AddressInfo).port, agent.adminToken!));
-  t.after(() => c.close());
-  const task: Task = await c.call('task.create', { name: 'Early pause', engine: 'codex' });
-  await c.call('session.send', { sessionId: task.sessions[0].id, text: 'original task instructions' });
-  await c.call('task.pause', { taskId: task.id });
-  await c.call('task.resume', { taskId: task.id });
-  assert.deepEqual(prompts, ['original task instructions', 'original task instructions']);
-});
+for (const engineId of ['claude-code', 'codex'] as const) {
+  test(`${engineId}: pause before thread creation replays input without duplicating history`, async (t) => {
+    const prompts: string[] = [];
+    const slow: Engine = () => ({ send(text) { prompts.push(text); }, close() {} });
+    const home = mkdtempSync(join(tmpdir(), 'horizon-early-pause-'));
+    const agent = await startAgent(home, 0, { engine: slow, codexEngine: slow });
+    t.after(() => agent.stop());
+    const c = client(await connect((agent.server.address() as AddressInfo).port, agent.adminToken!));
+    t.after(() => c.close());
+    const task: Task = await c.call('task.create', { name: 'Early pause', engine: engineId });
+    await c.call('session.subscribe', { sessionId: task.sessions[0].id });
+    await c.call('session.send', { sessionId: task.sessions[0].id, text: 'original task instructions' });
+    await c.call('task.pause', { taskId: task.id });
+    await c.call('task.resume', { taskId: task.id });
+    assert.deepEqual(prompts, ['original task instructions', 'original task instructions']);
+    const events = await c.until(3);
+    assert.deepEqual(events.map((event) => event.item), [
+      { kind: 'user', text: 'original task instructions' },
+      { kind: 'status', status: 'paused' }, { kind: 'status', status: 'resumed' },
+    ]);
+  });
+
+  test(`${engineId}: Agent restart before thread creation replays input once in history`, async (t) => {
+    const prompts: string[] = [];
+    const slow: Engine = () => ({ send(text) { prompts.push(text); }, close() {} });
+    const home = mkdtempSync(join(tmpdir(), 'horizon-early-restart-'));
+    const first = await startAgent(home, 0, { engine: slow, codexEngine: slow });
+    const c1 = client(await connect((first.server.address() as AddressInfo).port, first.adminToken!));
+    t.after(() => { c1.close(); first.stop(); });
+    const task: Task = await c1.call('task.create', { name: 'Early restart', engine: engineId });
+    const sessionId = task.sessions[0].id;
+    await c1.call('session.send', { sessionId, text: 'original task instructions' });
+    c1.close();
+    first.stop();
+    const second = await startAgent(home, 0, { engine: slow, codexEngine: slow });
+    t.after(() => second.stop());
+    const c2 = client(await connect((second.server.address() as AddressInfo).port, first.adminToken!));
+    t.after(() => c2.close());
+    await c2.call('session.subscribe', { sessionId });
+    const events = await c2.until(2);
+    assert.deepEqual(prompts, ['original task instructions', 'original task instructions']);
+    assert.deepEqual(events.map(({ item }) => item), [
+      { kind: 'user', text: 'original task instructions' }, { kind: 'status', status: 'interrupted' },
+    ]);
+  });
+}
 
 
 test('Task creation defaults to the first ready Engine and rejects unavailable Engines', async (t) => {

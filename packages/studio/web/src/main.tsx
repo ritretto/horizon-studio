@@ -20,7 +20,7 @@ const stateLabel: Record<AgentStatus['state'], string> = {
   unauthorized: 'invalid token',
 };
 
-const engineName: Record<EngineId, string> = { 'claude-code': 'Claude Code', codex: 'OpenAI Codex' };
+const engineName: Record<EngineId, string> = { 'claude-code': 'Claude Code', codex: 'Codex' };
 
 const engineLabel: Record<EngineStatus, string> = {
   ready: 'Ready',
@@ -228,7 +228,9 @@ function App() {
               a.hello?.engines.map((e) => (
                 <p key={e.id} className={e.status === 'ready' ? 'muted' : 'warn'}>
                   {engineName[e.id]}: {engineLabel[e.status]}{e.loginMethod && ` · ${loginLabel[e.loginMethod] ?? e.loginMethod}`}
-                  {e.status === 'no credentials' && (e.id === 'codex' ? ' · run npx @openai/codex login on the Agent machine' : ' · sign in to Claude Code on the Agent machine')}
+                  {e.status === 'no credentials' && (e.id === 'codex'
+                    ? <> · run <code>npx @openai/codex login</code> on the Agent machine</>
+                    : ' · sign in to Claude Code on the Agent machine')}
                 </p>
               ))}
           </div>

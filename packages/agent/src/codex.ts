@@ -18,6 +18,7 @@ import type { ThreadResumeResponse } from './codex-protocol/v2/ThreadResumeRespo
 import type { TurnStartParams } from './codex-protocol/v2/TurnStartParams.ts';
 import type { TurnStartResponse } from './codex-protocol/v2/TurnStartResponse.ts';
 import type { ItemCompletedNotification } from './codex-protocol/v2/ItemCompletedNotification.ts';
+import type { ItemStartedNotification } from './codex-protocol/v2/ItemStartedNotification.ts';
 import type { TurnCompletedNotification } from './codex-protocol/v2/TurnCompletedNotification.ts';
 import type { CommandExecutionRequestApprovalResponse } from './codex-protocol/v2/CommandExecutionRequestApprovalResponse.ts';
 import type { FileChangeRequestApprovalResponse } from './codex-protocol/v2/FileChangeRequestApprovalResponse.ts';
@@ -37,6 +38,7 @@ type Message = {
   error?: { message: string };
 };
 type Launch = (cwd?: string) => ChildProcessWithoutNullStreams;
+type FileChange = Extract<ItemStartedNotification['item'], { type: 'fileChange' }>;
 const require = createCodexRequire(import.meta.url);
 
 // A standalone app-server must not reuse the desktop app's launch context.
@@ -170,15 +172,20 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
     let ready: Promise<string> | undefined;
     let threadId = opts.resume;
     let closed = false;
+    let awaitingTurn = false;
+    let restoreInput = false;
     const approvals = new Set<RequestId>();
+    const fileChanges = new Map<string, { turnId: string; changes: FileChange['changes'] }>();
 
     const fail = (error: unknown) => {
       if (closed) return;
       closed = true;
       approvals.clear();
+      fileChanges.clear();
       rpc?.close();
       const message = error instanceof Error ? error.message : String(error);
-      opts.onItem({ kind: 'turn_end', error: message });
+      if (awaitingTurn) opts.onItem({ kind: 'turn_end', error: message });
+      awaitingTurn = false;
       opts.onExit();
     };
     const onEvent = (message: Message) => {
@@ -193,10 +200,22 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
           rpc?.write({ id: request.id, result: { decision: 'cancel' } });
           return;
         }
+        let input: unknown = request.params;
+        if (request.method === 'item/fileChange/requestApproval') {
+          const proposed = fileChanges.get(request.params.itemId);
+          if (!proposed || proposed.turnId !== request.params.turnId || proposed.changes.length === 0) {
+            rpc?.write({ id: request.id, result: { decision: 'cancel' } });
+            fail(new Error('Codex file change details are unavailable. Send a new message to retry.'));
+            return;
+          }
+          const paths = proposed.changes.flatMap((change) => [change.path,
+            ...(change.kind.type === 'update' && change.kind.move_path ? [change.kind.move_path] : [])]);
+          input = { ...request.params, paths, changes: proposed.changes };
+        }
         approvals.add(request.id);
         void opts.askPermission({
           tool: request.method === 'item/commandExecution/requestApproval' ? 'Command' : 'File change',
-          input: request.params, reason: request.params.reason ?? undefined,
+          input, reason: request.params.reason ?? undefined,
         }).then(({ allow, always }) => {
           if (closed || !approvals.delete(request.id)) return;
           const result: CommandExecutionRequestApprovalResponse | FileChangeRequestApprovalResponse = {
@@ -208,21 +227,32 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
         });
         return;
       }
-      if (message.method === 'item/completed') {
+      if (message.method === 'item/started') {
+        const params = message.params as ItemStartedNotification;
+        if (params.threadId === threadId && params.item.type === 'fileChange')
+          fileChanges.set(params.item.id, { turnId: params.turnId, changes: params.item.changes });
+      } else if (message.method === 'item/completed') {
         const params = message.params as ItemCompletedNotification;
-        if (params.threadId === threadId) completedItem(params.item, opts);
+        if (params.threadId === threadId) {
+          fileChanges.delete(params.item.id);
+          completedItem(params.item, opts);
+        }
       } else if (message.method === 'turn/completed') {
         const params = message.params as TurnCompletedNotification;
         if (params.threadId !== threadId) return;
         approvals.clear();
-        if (params.turn.status === 'completed') opts.onItem({ kind: 'turn_end' });
-        else fail(new Error(params.turn.error?.message ?? params.turn.status));
+        fileChanges.clear();
+        if (params.turn.status === 'completed') {
+          awaitingTurn = false;
+          opts.onItem({ kind: 'turn_end' });
+        } else fail(new Error(params.turn.error?.message ?? params.turn.status));
       }
     };
 
     return {
       send(text) {
         if (closed) return;
+        awaitingTurn = true;
         try {
           if (!rpc) rpc = new AppServer(launch, opts.cwd, onEvent, fail);
           const active = rpc;
@@ -235,16 +265,29 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
               sandbox: opts.permissionMode === 'auto' ? 'danger-full-access' : 'workspace-write',
               ...(platform === 'win32' && opts.permissionMode === 'ask' ? { config: { 'windows.sandbox': 'unelevated' } } : {}),
             };
-            const result = threadId
-              ? await active.request('thread/resume', { ...policy, threadId })
-              : await active.request('thread/start', policy);
+            let result: ThreadStartResponse | ThreadResumeResponse;
+            if (threadId) {
+              try {
+                result = await active.request('thread/resume', { ...policy, threadId });
+              } catch (error) {
+                // A thread id can arrive before Codex has persisted its first rollout.
+                // Only this explicit missing-rollout error permits creating a replacement.
+                if (!(error instanceof Error) || !/^no rollout found\b/i.test(error.message) || closed) throw error;
+                result = await active.request('thread/start', policy);
+                restoreInput = true;
+              }
+            } else {
+              result = await active.request('thread/start', policy);
+            }
             threadId = result.thread.id;
             if (!closed) opts.onEngineSessionId(threadId);
             return threadId;
           })();
           void ready.then(async (id) => {
+            const input = restoreInput ? opts.initialInput ?? text : text;
+            restoreInput = false;
             if (!closed) await active.request('turn/start', {
-              threadId: id, input: [{ type: 'text', text, text_elements: [] }],
+              threadId: id, input: [{ type: 'text', text: input, text_elements: [] }],
             });
           }).catch(fail);
         } catch (error) {
@@ -254,6 +297,7 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
       close() {
         closed = true;
         approvals.clear();
+        fileChanges.clear();
         rpc?.close();
       },
     };
@@ -281,8 +325,6 @@ export function createCodexEngine(launch: Launch, platform: NodeJS.Platform = pr
   };
   return engine;
 }
-
-export const codex = createCodexEngine(launchCodex);
 
 export function codexForAgent(home: string): Engine {
   return createCodexEngine((cwd) => {

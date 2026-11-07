@@ -12,6 +12,8 @@ export interface EngineOptions {
   permissionMode: PermissionMode;
   /** Engine conversation id to continue. */
   resume?: string;
+  /** Recorded user input to restore only if the saved Engine conversation has no rollout. */
+  initialInput?: string;
   onItem(item: SessionItem): void;
   onEngineSessionId(id: string): void;
   /** The process has ended. Future messages must start a new Engine. */
