@@ -3,10 +3,10 @@ import type { AccessLevel, AgentHello, MemberInfo, Response } from '@horizon/pro
 
 type Request = (method: string, params?: unknown) => Promise<Response>;
 
-/** Управление Member одного Agent (только admin): создание, выпуск и отзыв Access Token. */
+/** Manages one Agent's Members (admin only): creating them, and issuing and revoking Access Tokens. */
 export function Members({ request, self }: { request: Request; self: AgentHello['member'] }) {
   const [members, setMembers] = useState<MemberInfo[]>([]);
-  // Новый токен показывается один раз — Agent хранит только его хэш.
+  // A new token is shown once, because the Agent stores only its hash.
   const [issued, setIssued] = useState<{ name: string; token: string }>();
   const [error, setError] = useState('');
 
@@ -45,10 +45,10 @@ export function Members({ request, self }: { request: Request; self: AgentHello[
       {issued && (
         <div className="issued">
           <p>
-            Access Token для <strong>{issued.name}</strong> — показывается один раз, скопируйте его:
+            Access Token for <strong>{issued.name}</strong>. It is shown once, so copy it now:
           </p>
           <code>{issued.token}</code>
-          <button onClick={() => setIssued(undefined)}>Скопировал</button>
+          <button onClick={() => setIssued(undefined)}>Copied</button>
         </div>
       )}
       {error && <p className="warn">{error}</p>}
@@ -57,37 +57,37 @@ export function Members({ request, self }: { request: Request; self: AgentHello[
           {members.map((m) => (
             <tr key={m.id}>
               <td>
-                {m.name} {m.id === self.id && <span className="muted">(вы)</span>}
+                {m.name} {m.id === self.id && <span className="muted">(you)</span>}
               </td>
               <td className="muted">{m.accessLevel}</td>
               <td>
-                {m.tokens.length === 0 && <span className="muted">нет токенов — доступа нет</span>}
+                {m.tokens.length === 0 && <span className="muted">no tokens, so no access</span>}
                 {m.tokens.map((t) => (
                   <div key={t.id} className="token">
                     <span className="muted">
-                      токен от {new Date(t.createdAt).toLocaleString()}
-                      {t.id === self.tokenId && ' — им подключена эта Studio'}
+                      token from {new Date(t.createdAt).toLocaleString()}
+                      {t.id === self.tokenId && ', used by this Studio'}
                     </span>
                     <button className="link" onClick={() => call('member.revokeToken', { memberId: m.id, tokenId: t.id })}>
-                      отозвать
+                      revoke
                     </button>
                   </div>
                 ))}
               </td>
               <td>
-                <button onClick={() => issue(m)}>Новый токен</button>
+                <button onClick={() => issue(m)}>New token</button>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
       <form onSubmit={create}>
-        <input name="name" placeholder="Имя нового Member" required />
+        <input name="name" placeholder="New Member name" required />
         <select name="accessLevel" defaultValue="user" aria-label="Access Level">
-          <option value="user">user — только свои Task</option>
-          <option value="admin">admin — все Task и управление Member</option>
+          <option value="user">user: own Tasks only</option>
+          <option value="admin">admin: all Tasks and Member management</option>
         </select>
-        <button>Создать</button>
+        <button>Create</button>
       </form>
     </div>
   );

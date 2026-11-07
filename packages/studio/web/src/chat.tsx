@@ -39,7 +39,7 @@ export function Chat({ events, state, engine, engineName, onSend, onAnswer }: Pr
     }
   }
 
-  // Без фигурных скобок нельзя: в новых браузерах scrollIntoView возвращает Promise, а React примет его за cleanup.
+  // The braces are required: in new browsers scrollIntoView returns a Promise, which React would take for a cleanup.
   useEffect(() => {
     end.current?.scrollIntoView({ block: 'end' });
   }, [events.length]);
@@ -53,16 +53,16 @@ export function Chat({ events, state, engine, engineName, onSend, onAnswer }: Pr
   return (
     <section className="chat">
       <div className="items">
-        {events.length === 0 && <p className="muted">Напишите, что нужно сделать.</p>}
+        {events.length === 0 && <p className="muted">Describe what needs to be done.</p>}
         {display.map((e) => (
           <Item key={e.seq} item={e.item} results={results} answers={answers} engineName={engineName} onAnswer={onAnswer} />
         ))}
         {stopped ? (
-          <p className="muted">{state === 'paused' ? 'Task на паузе' : 'Task завершена'}</p>
+          <p className="muted">{state === 'paused' ? 'Task is paused' : 'Task is completed'}</p>
         ) : waiting ? (
-          <p className="warn">Ждёт вашего решения</p>
+          <p className="warn">Waiting for your decision</p>
         ) : (
-          busy && <p className="muted">{engineName} работает…</p>
+          busy && <p className="muted">{engineName} is working…</p>
         )}
         <div ref={end} />
       </div>
@@ -73,15 +73,15 @@ export function Chat({ events, state, engine, engineName, onSend, onAnswer }: Pr
           onKeyDown={(e) => e.key === 'Enter' && (e.metaKey || e.ctrlKey) && submit(e)}
           placeholder={
             state === 'paused'
-              ? 'Task на паузе — нажмите «Продолжить»'
+              ? 'Task is paused. Click Resume to continue'
               : state === 'completed'
-                ? 'Task завершена — переоткройте, чтобы продолжить'
-                : 'Сообщение (⌘/Ctrl+Enter — отправить)'
+                ? 'Task is completed. Reopen it to continue'
+                : 'Message (⌘/Ctrl+Enter to send)'
           }
           disabled={inputDisabled}
           rows={3}
         />
-        <button disabled={inputDisabled}>Отправить</button>
+        <button disabled={inputDisabled}>Send</button>
       </form>
     </section>
   );
@@ -119,22 +119,22 @@ function Item({ item, results, answers, engineName, onAnswer }: ItemProps) {
       return (
         <div className="permission">
           <div>
-            {engineName} хочет выполнить <strong>{item.tool}</strong> <span className="muted">{summary(item.input)}</span>
+            {engineName} wants to run <strong>{item.tool}</strong> <span className="muted">{summary(item.input)}</span>
           </div>
           {item.reason && <div className="muted">{item.reason}</div>}
           <details>
-            <summary>Подробности</summary>
+            <summary>Details</summary>
             <pre>{JSON.stringify(item.input, null, 2)}</pre>
           </details>
           {answer ? (
             <div className={answer.allow ? 'muted' : 'warn'}>
-              {answer.allow ? (answer.always ? 'Разрешено всегда для этой Session' : 'Разрешено') : 'Запрещено'}
+              {answer.allow ? (answer.always ? 'Always allowed for this Session' : 'Allowed') : 'Denied'}
             </div>
           ) : (
             <div className="actions">
-              <button onClick={() => onAnswer(item.requestId, true, false)}>Разрешить</button>
-              <button onClick={() => onAnswer(item.requestId, true, true)}>Разрешать всегда</button>
-              <button onClick={() => onAnswer(item.requestId, false, false)}>Запретить</button>
+              <button onClick={() => onAnswer(item.requestId, true, false)}>Allow</button>
+              <button onClick={() => onAnswer(item.requestId, true, true)}>Always allow</button>
+              <button onClick={() => onAnswer(item.requestId, false, false)}>Deny</button>
             </div>
           )}
         </div>
@@ -142,26 +142,26 @@ function Item({ item, results, answers, engineName, onAnswer }: ItemProps) {
     }
     case 'tool_result':
     case 'permission_answer':
-      return null; // показываются внутри своего tool / permission
+      return null; // shown inside their tool / permission
     case 'status':
       return <div className="divider">{statusLabel[item.status]}</div>;
     case 'turn_end':
-      return item.error ? <p className="warn">Ход завершился с ошибкой: {item.error}</p> : null;
+      return item.error ? <p className="warn">The turn ended with an error: {item.error}</p> : null;
     case 'error':
       return <p className="warn">{item.message}</p>;
   }
 }
 
 const statusLabel = {
-  paused: 'Пауза',
-  resumed: 'Продолжено',
-  completed: 'Завершена',
-  reopened: 'Переоткрыта',
-  interrupted: 'Agent перезапустился — продолжаю с места остановки',
+  paused: 'Paused',
+  resumed: 'Resumed',
+  completed: 'Completed',
+  reopened: 'Reopened',
+  interrupted: 'Agent restarted. Continuing from where it stopped',
 };
 
 function summary(input: unknown): string {
   const v = input as Record<string, unknown>;
   const s = String(v?.command ?? v?.file_path ?? v?.pattern ?? v?.url ?? '');
-  return s.length > 80 ? '…' + s.slice(-80) : s; // у путей важен конец
+  return s.length > 80 ? '…' + s.slice(-80) : s; // the end of a path matters most
 }

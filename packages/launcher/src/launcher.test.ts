@@ -6,12 +6,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { currentVersion, installVersion, lastUpdate, makeCurrent, nextVersion } from './versions.ts';
 
-test('run: запускает текущую версию, перезапускает после падения, по SIGTERM штатно останавливает Agent', async () => {
+test('run: starts the current version, restarts after a crash, stops the Agent gracefully on SIGTERM', async () => {
   const home = mkdtempSync(join(tmpdir(), 'horizon-launcher-'));
   const runs = join(home, 'runs.txt');
   mkdirSync(join(home, 'versions', '1.0.0'), { recursive: true });
   writeFileSync(join(home, 'current'), '1.0.0\n');
-  // Фейковый Agent: первый запуск падает, второй работает и отмечает SIGTERM.
+  // Fake Agent: the first run crashes, the second works and records SIGTERM.
   writeFileSync(
     join(home, 'versions', '1.0.0', 'agent.mjs'),
     `import { appendFileSync, existsSync, readFileSync } from 'node:fs';
@@ -28,7 +28,7 @@ setInterval(() => {}, 1000);
     try {
       return readFileSync(runs, 'utf8').trim().split('\n');
     } catch {
-      return []; // Agent ещё не стартовал
+      return []; // the Agent has not started yet
     }
   };
   const until = async (n: number) => {
@@ -36,7 +36,7 @@ setInterval(() => {}, 1000);
   };
   await until(2);
   assert.deepEqual(lines(), [`start --home ${home}`, `start --home ${home}`]);
-  assert.match(readFileSync(join(home, 'agent.log'), 'utf8'), /Agent 1\.0\.0 завершился \(1\)/);
+  assert.match(readFileSync(join(home, 'agent.log'), 'utf8'), /Agent 1\.0\.0 exited \(1\)/);
 
   const exited = new Promise((r) => launcher.once('exit', r));
   launcher.kill('SIGTERM');
@@ -44,11 +44,11 @@ setInterval(() => {}, 1000);
   assert.equal(lines().at(-1), 'term');
 });
 
-test('Agent Update: неудачная версия откатывается, удачная подтверждается и становится текущей', async () => {
+test('Agent Update: a failed version is rolled back, a good one is confirmed and becomes current', async () => {
   const home = mkdtempSync(join(tmpdir(), 'horizon-launcher-'));
   const runs = join(home, 'runs.txt');
   const versions = join(import.meta.dirname, 'versions.ts');
-  // Фейковый Agent: отмечает запуск с pid, подтверждает себя, если его пробуют, и выходит по SIGTERM.
+  // Fake Agent: records its start with the pid, confirms itself when on trial, and exits on SIGTERM.
   const agent = (version: string, crash = false) => ({
     package: { version },
     agent: `import { appendFileSync } from 'node:fs';
@@ -74,7 +74,7 @@ setInterval(() => {}, 1000);
     while (lines().length < n) await new Promise((r) => setTimeout(r, 50));
   };
 
-  // 2.0.0 падает при старте → откат на 1.0.0, неудачная версия удалена.
+  // 2.0.0 crashes at start → rollback to 1.0.0, the failed version is deleted.
   await until(2);
   assert.deepEqual(lines().map((l) => l.split(' ')[0]), ['2.0.0', '1.0.0']);
   assert.equal(currentVersion(home), v1);
@@ -82,7 +82,7 @@ setInterval(() => {}, 1000);
   assert.equal(lastUpdate(home)?.ok, false);
   assert.ok(!existsSync(join(home, 'versions', v2)));
 
-  // 3.0.0: Agent 1.0.0 выходит ради обновления, новая версия подтверждает себя.
+  // 3.0.0: Agent 1.0.0 exits for the update, and the new version confirms itself.
   const v3 = await installVersion(home, agent('3.0.0'));
   writeFileSync(join(home, 'next'), v3);
   process.kill(Number(lines()[1].split(' ')[1]), 'SIGTERM');
@@ -90,7 +90,7 @@ setInterval(() => {}, 1000);
   assert.equal(lines()[2].split(' ')[0], '3.0.0');
   while (nextVersion(home)) await new Promise((r) => setTimeout(r, 50));
   assert.equal(currentVersion(home), v3);
-  assert.deepEqual(readdirSync(join(home, 'versions')).sort(), [v1, v3].sort(), 'хранятся текущая и предыдущая');
+  assert.deepEqual(readdirSync(join(home, 'versions')).sort(), [v1, v3].sort(), 'the current and previous versions are kept');
 
   launcher.kill('SIGTERM');
   await new Promise((r) => launcher.once('exit', r));

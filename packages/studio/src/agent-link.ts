@@ -7,10 +7,10 @@ export interface Connection extends ConnectionInput {
 }
 
 const RETRY_MS = 3000;
-/** Как часто перепроверять статус Agent, например готовность Engine после входа в Claude Code. */
+/** How often to recheck Agent status, for example Engine readiness after logging in to Claude Code. */
 const REFRESH_MS = 60_000;
 
-/** Соединение Studio-сервера с одним Agent: держит его, переподключается и ретранслирует запросы. */
+/** The Studio server connection to one Agent: keeps it open, reconnects and relays requests. */
 export class AgentLink {
   status: AgentStatus;
   private ws?: WebSocket;
@@ -24,7 +24,7 @@ export class AgentLink {
   private onEvent: (e: SessionEvent | TasksEvent) => void;
   private knownHosts: string;
   private tunnel?: Tunnel;
-  /** Локальный порт, по которому сейчас доступен Agent (свой или туннеля). */
+  /** The local port the Agent is reachable on now (its own or the tunnel). */
   private port = 0;
 
   constructor(connection: Connection, knownHosts: string, onChange: () => void, onEvent: (e: SessionEvent | TasksEvent) => void) {
@@ -46,7 +46,7 @@ export class AgentLink {
     return new Promise((resolve) => this.pending.set(id, resolve));
   }
 
-  /** Agent Update: отправляет сборку на `PUT /update` Agent. */
+  /** Agent Update: sends the build to the Agent's `PUT /update`. */
   async update(build: string): Promise<{ result: unknown } | { error: { message: string } }> {
     if (this.status.state !== 'online') return { error: { message: `agent is ${this.status.state}` } };
     const res = await fetch(`http://127.0.0.1:${this.port}/update`, {
@@ -69,7 +69,7 @@ export class AgentLink {
   private async open() {
     let port = this.connection.port;
     if (this.connection.ssh) {
-      // ponytail: туннель поднимается заново на каждую попытку, пока Agent недоступен — ssh-подключение раз в RETRY_MS.
+      // ponytail: the tunnel is reopened on every attempt while the Agent is unreachable, one ssh connection per RETRY_MS.
       try {
         this.tunnel = await openTunnel(this.connection.ssh, port, this.knownHosts, () => this.ws?.terminate());
       } catch (e) {
@@ -106,7 +106,7 @@ export class AgentLink {
       this.pending.get(msg.id)?.(msg);
       this.pending.delete(msg.id);
     });
-    ws.on('error', () => {}); // за ним всегда следует close
+    ws.on('error', () => {}); // close always follows
     ws.on('close', () => {
       for (const [id, resolve] of this.pending) resolve({ type: 'response', id, error: { message: 'agent disconnected' } });
       this.pending.clear();

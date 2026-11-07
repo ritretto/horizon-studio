@@ -8,7 +8,7 @@ import type { Member } from './members.ts';
 interface StoredSession {
   id: string;
   engineSessionId?: string;
-  /** Пауза пришлась на середину хода — при продолжении Engine надо попросить доделать. */
+  /** The pause came mid-turn, so on resume the Engine must be asked to finish. */
   pausedMidTurn?: boolean;
 }
 
@@ -17,10 +17,10 @@ interface StoredTask extends Task {
 }
 
 const RECOVER_PROMPT =
-  '[HorizonStudio] Agent был перезапущен (сбой, перезагрузка или обновление), и твой ход прервался. Проверь состояние (git status, незавершённые команды, lock-файлы), исправь что нужно и продолжай. Если не получается — опиши проблему и спроси пользователя.';
+  '[HorizonStudio] Agent was restarted (a crash, a reboot or an update), and your turn was interrupted. Check the state (git status, unfinished commands, lock files), fix what is needed and continue. If you cannot, describe the problem and ask the user.';
 
 const CONTINUE_PROMPT =
-  '[HorizonStudio] Task продолжена после паузы. Твой предыдущий ход был прерван — проверь состояние и продолжай с того места, где остановился.';
+  '[HorizonStudio] The Task was resumed after a pause. Your previous turn was interrupted. Check the state and continue from where you stopped.';
 
 const unavailableEngine: Engine = ({ onItem }) => ({
   send: () => onItem({ kind: 'turn_end', error: 'Task engine is unavailable on Agent' }),
@@ -30,8 +30,8 @@ const unavailableEngine: Engine = ({ onItem }) => ({
 type Listener = (e: SessionEvent) => void;
 
 /**
- * Task и их Session в `<Agent Home>/tasks/<taskId>/`:
- * `task.json`, `workspace/` (Task Directory), `sessions/<sessionId>.jsonl` (журнал событий).
+ * Tasks and their Sessions in `<Agent Home>/tasks/<taskId>/`:
+ * `task.json`, `workspace/` (Task Directory), `sessions/<sessionId>.jsonl` (event log).
  */
 export class Tasks {
   private dir: string;
@@ -39,7 +39,7 @@ export class Tasks {
   private sessions = new Map<string, Session>();
   private engines: ReadonlyMap<EngineId, Engine>;
   private retentionMs: number;
-  /** Изменился список Task или состояние одной из них. */
+  /** The Task list or the state of a Task changed. */
   onChange = () => {};
 
   constructor(home: string, engines: ReadonlyMap<EngineId, Engine>, retentionDays: number) {
@@ -76,14 +76,14 @@ export class Tasks {
     return [...this.tasks.values()].filter((t) => canSee(member, t)).map((t) => this.public(t));
   }
 
-  /** Session по id, если Member её видит. */
+  /** A Session by id, if the Member can see it. */
   session(sessionId: string, member: Member): Session | undefined {
     const task = [...this.tasks.values()].find((t) => t.sessions.some((s) => s.id === sessionId));
     if (!task || !canSee(member, task)) return;
     return this.load(task, sessionId);
   }
 
-  /** Пауза: все Session Task корректно останавливаются; id разговоров Engine сохранены. */
+  /** Pause: all Sessions of the Task stop cleanly; Engine conversation ids are kept. */
   pause(taskId: string, member: Member) {
     return this.transition(taskId, member, 'active', 'paused', (s) => s.stop('paused'));
   }
@@ -96,12 +96,12 @@ export class Tasks {
     return this.transition(taskId, member, ['active', 'paused'], 'completed', (s) => s.stop('completed'));
   }
 
-  /** Завершённая Task возвращается на паузу — дальше как обычно «Продолжить». */
+  /** A completed Task returns to paused; from there, Resume works as usual. */
   reopen(taskId: string, member: Member) {
     return this.transition(taskId, member, 'completed', 'paused', (s) => s.reopened());
   }
 
-  /** Безвозвратно удаляет завершённую Task; false — нет такой, нет прав или она не завершена. */
+  /** Permanently deletes a completed Task; false if it does not exist, access is denied or it is not completed. */
   delete(taskId: string, member: Member): boolean {
     const task = this.tasks.get(taskId);
     if (!task || !canSee(member, task) || task.state !== 'completed') return false;
@@ -109,7 +109,7 @@ export class Tasks {
     return true;
   }
 
-  /** После перезапуска Agent продолжает Session активных Task, прерванные посреди хода. */
+  /** After an Agent restart, continues Sessions of active Tasks that were interrupted mid-turn. */
   recover() {
     for (const task of this.tasks.values()) {
       if ((task.state ?? 'active') !== 'active') continue;
@@ -121,16 +121,16 @@ export class Tasks {
   }
 
   /**
-   * Штатная остановка Agent: закрывает процессы Engine, не трогая состояние Task —
-   * прерванные ходы продолжатся при следующем старте (recover).
-   * ponytail: при жёстком сбое (kill -9) процесс Engine живёт ещё несколько секунд и доделывает текущую команду;
-   * если это станет проблемой — запоминать PID через spawnClaudeCodeProcess и добивать при старте.
+   * Graceful Agent stop: closes Engine processes without touching Task state, so
+   * interrupted turns continue at the next start (recover).
+   * ponytail: after a hard crash (kill -9) the Engine process lives a few more seconds and finishes its current command;
+   * if that becomes a problem, record the PID through spawnClaudeCodeProcess and kill it at startup.
    */
   shutdown() {
     for (const s of this.sessions.values()) s.stop();
   }
 
-  /** Удаляет завершённые Task, срок хранения которых истёк. */
+  /** Deletes completed Tasks whose retention period has expired. */
   purge(now = Date.now()) {
     for (const t of this.tasks.values()) if (t.state === 'completed' && Date.parse(this.public(t).deleteAt!) <= now) this.remove(t);
   }
@@ -194,7 +194,7 @@ export class Session {
   private midTurn: boolean;
   private listeners = new Set<Listener>();
   private run?: EngineRun;
-  /** Номер запуска Engine: события остановленного запуска отбрасываются. */
+  /** Engine run number: events from a stopped run are discarded. */
   private generation = 0;
   private pending = new Map<string, (answer: { allow: boolean; always: boolean }) => void>();
   private task: StoredTask;
@@ -214,13 +214,13 @@ export class Session {
     this.midTurn = history.filter((e) => e.item.kind !== 'status').at(-1)?.item.kind !== 'turn_end' && history.length > 0;
   }
 
-  /** Ход шёл, когда Agent остановился (по журналу при загрузке). */
+  /** A turn was running when the Agent stopped (from the log at load time). */
   get interrupted() {
     return this.midTurn && !this.run;
   }
 
   recover() {
-    // Процесса Engine, ждавшего ответа на эти запросы, больше нет.
+    // The Engine process waiting for answers to these requests is gone.
     const history = this.history(0);
     const answered = new Set(history.map((e) => (e.item.kind === 'permission_answer' ? e.item.requestId : '')));
     for (const { item } of history)
@@ -230,7 +230,7 @@ export class Session {
     this.send(this.continuation(RECOVER_PROMPT));
   }
 
-  /** Отправляет сообщение; false, если Task на паузе или завершена. */
+  /** Sends a message; false if the Task is paused or completed. */
   send(text: string): boolean {
     if (this.task.state === 'paused' || this.task.state === 'completed') return false;
     if (this.task.engine === 'codex' && this.run && this.midTurn) throw new Error('Codex is already working');
@@ -247,12 +247,12 @@ export class Session {
     return true;
   }
 
-  /** Останавливает Engine; со статусом — отмечает это в журнале (пауза или завершение). */
+  /** Stops the Engine; with a status, records it in the log (pause or completion). */
   stop(status?: 'paused' | 'completed') {
     this.generation++;
     this.run?.close();
     this.run = undefined;
-    // Процесса Engine больше нет — висящие запросы разрешений снимаются.
+    // The Engine process is gone, so pending permission requests are cleared.
     this.clearPermissions();
     if (!status) return;
     this.stored.pausedMidTurn = this.midTurn;
@@ -272,7 +272,7 @@ export class Session {
     }
   }
 
-  /** Ответ на запрос разрешения; false, если такого ожидающего запроса нет. */
+  /** Answer to a permission request; false if no such request is pending. */
   answer(requestId: string, allow: boolean, always: boolean): boolean {
     const resolve = this.pending.get(requestId);
     if (!resolve) return false;
@@ -282,7 +282,7 @@ export class Session {
     return true;
   }
 
-  /** Отдаёт историю с seq > fromSeq, затем новые события; возвращает отписку. */
+  /** Delivers history with seq > fromSeq, then new events; returns an unsubscribe function. */
   subscribe(fromSeq: number, listener: Listener): () => void {
     for (const e of this.history(fromSeq)) listener(e);
     this.listeners.add(listener);
