@@ -8,9 +8,9 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { AgentsEvent, ConnectionInput, Response, StudioRequest } from '@horizon/protocol';
 import { AgentLink, type Connection } from './agent-link.ts';
 
-// И из src/, и из dist/ это указывает на dist/web.
+// From both src/ and dist/, this points to dist/web.
 const webRoot = fileURLToPath(new URL('../dist/web/', import.meta.url));
-/** Локальная сборка Agent для Agent Update (`npm run build -w @horizon/agent`). */
+/** Local Agent build for Agent Update (`npm run build -w @horizon/agent`). */
 const agentBuild = fileURLToPath(new URL('../../agent/dist/', import.meta.url));
 const types: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -34,8 +34,8 @@ export function startStudio(configFile: string, port: number): Promise<Server> {
     for (const c of clients) c.send(data);
   };
   const broadcast = () => send(agentsEvent());
-  // ponytail: события всех Session уходят всем браузерам, браузер фильтрует по sessionId и seq.
-  // Адресная рассылка — когда браузеров станет много (общая Studio).
+  // ponytail: events of all Sessions go to all browsers, and the browser filters by sessionId and seq.
+  // Add targeted delivery when there are many browsers (a shared Studio).
   const knownHosts = join(dirname(configFile), 'known_hosts');
   const link = (c: Connection) =>
     links.set(c.id, new AgentLink(c, knownHosts, broadcast, (e) => send({ ...e, agentId: c.id })));
@@ -65,7 +65,7 @@ export function startStudio(configFile: string, port: number): Promise<Server> {
           const pkg = JSON.parse(await readFile(join(agentBuild, 'package.json'), 'utf8'));
           build = JSON.stringify({ package: pkg, agent: await readFile(join(agentBuild, 'agent.mjs'), 'utf8') });
         } catch {
-          return { type: 'response', id: req.id, error: { message: `нет сборки Agent в ${agentBuild}: npm run build` } };
+          return { type: 'response', id: req.id, error: { message: `no Agent build in ${agentBuild}: npm run build` } };
         }
         return { type: 'response', id: req.id, ...(await agent.update(build)) };
       }
@@ -84,7 +84,7 @@ export function startStudio(configFile: string, port: number): Promise<Server> {
   }
 
   const server = createServer(async (req, res) => {
-    // URL-парсер схлопывает `..` (в т.ч. %2e%2e), выйти за webRoot нельзя.
+    // The URL parser collapses `..` (including %2e%2e), so a path cannot leave webRoot.
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     const file = path === '/' ? 'index.html' : path.slice(1);
     try {

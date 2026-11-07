@@ -17,7 +17,7 @@ const config: { port?: number; defaultPermissionMode?: PermissionMode; completed
   : {};
 const port = config.port ?? 7400;
 
-// Под Launcher Agent запущен из <home>/versions/<id>/agent.mjs.
+// Under the Launcher, the Agent runs from <home>/versions/<id>/agent.mjs.
 const launcher = process.env.HORIZON_LAUNCHER === '1';
 const build = launcher ? basename(dirname(fileURLToPath(import.meta.url))) : undefined;
 
@@ -32,14 +32,14 @@ const { adminToken, stop } = await startAgent(home, port, {
       }
     : undefined,
 });
-// Новая версия поднялась и слушает порт — подтверждаем её, иначе Launcher откатится.
+// The new version is up and listening, so confirm it; otherwise the Launcher rolls back.
 if (build && nextVersion(home) === build) {
   makeCurrent(home, build);
   writeUpdate(home, { version: build, ok: true, at: new Date().toISOString() });
 }
 console.log(`horizon agent listening on 127.0.0.1:${port}, home ${home}`);
 if (adminToken) {
-  console.log(`\nAdmin Access Token (показывается один раз, сохраните его):\n\n  ${adminToken}\n`);
+  console.log(`\nAdmin Access Token (shown once, save it now):\n\n  ${adminToken}\n`);
 }
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const)

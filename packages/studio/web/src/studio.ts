@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { AgentStatus, AgentsEvent, Response, StudioSessionEvent, StudioTasksEvent, Task } from '@horizon/protocol';
 
-/** Соединение браузера со Studio-сервером: список Agent'ов, их Task, события Session и запросы. */
+/** The browser's connection to the Studio server: the Agent list, their Tasks, Session events and requests. */
 export function useStudio() {
   const [agents, setAgents] = useState<AgentStatus[]>([]);
   const [tasks, setTasks] = useState<Record<string, Task[]>>({});
@@ -27,7 +27,7 @@ export function useStudio() {
         if (msg.type === 'agents') setAgents(msg.agents);
         else if (msg.type === 'tasks') setTasks((t) => ({ ...t, [msg.agentId]: msg.tasks }));
         else if (msg.type === 'event') {
-          // История может прийти повторно (переподписка, другая вкладка) — берём только новые seq.
+          // History may arrive again (resubscribing, another tab), so take only new seq values.
           setEvents((all) => {
             const list = all[msg.sessionId] ?? [];
             if (list.length && list[list.length - 1].seq >= msg.seq) return all;

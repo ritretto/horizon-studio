@@ -3,17 +3,17 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 
-// Пользовательский сервис (ADR 0004): Agent работает от имени пользователя, без прав администратора.
+// User service (ADR 0004): the Agent runs as the user, without administrator rights.
 const LABEL = 'dev.horizon.agent';
 const plist = join(homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
 const unit = join(homedir(), '.config', 'systemd', 'user', 'horizon-agent.service');
 const gui = `gui/${userInfo().uid}`;
 const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 
-/** Регистрирует и запускает сервис: `launcher run --home <home>`; повторная установка заменяет прежнюю. */
+/** Registers and starts the service: `launcher run --home <home>`; reinstalling replaces the previous install. */
 export function installService(home: string, launcher: string) {
   const command = [process.execPath, launcher, 'run', '--home', home];
-  // PATH пользователя — чтобы Engine находил git, node и прочие инструменты так же, как в терминале.
+  // The user's PATH, so the Engine finds git, node and other tools as it would in a terminal.
   const path = process.env.PATH ?? '';
   switch (process.platform) {
     case 'darwin': {
@@ -40,7 +40,7 @@ ${command.map((a) => `    <string>${xml(a)}</string>`).join('\n')}
 </plist>
 `,
       );
-      spawnSync('launchctl', ['bootout', `${gui}/${LABEL}`]); // прежняя установка, если была
+      spawnSync('launchctl', ['bootout', `${gui}/${LABEL}`]); // the previous install, if any
       execFileSync('launchctl', ['bootstrap', gui, plist]);
       return;
     }
@@ -57,7 +57,7 @@ ExecStart=${command.map(quote).join(' ')}
 Environment=${quote(`PATH=${path}`)}
 Restart=always
 RestartSec=3
-# SIGTERM — только Launcher: он сам штатно останавливает Agent.
+# SIGTERM goes to the Launcher only: it stops the Agent gracefully.
 KillMode=mixed
 
 [Install]
@@ -67,16 +67,16 @@ WantedBy=default.target
       execFileSync('systemctl', ['--user', 'daemon-reload']);
       execFileSync('systemctl', ['--user', 'enable', 'horizon-agent']);
       execFileSync('systemctl', ['--user', 'restart', 'horizon-agent']);
-      // Без linger сервисы пользователя живут только пока он залогинен.
+      // Without linger, user services live only while the user is logged in.
       const linger = spawnSync('loginctl', ['enable-linger', userInfo().username]);
       if (linger.status !== 0)
-        console.warn(`Не удалось включить linger — Agent не стартует после перезагрузки до входа пользователя.
-Выполните: sudo loginctl enable-linger ${userInfo().username}`);
+        console.warn(`Could not enable linger, so after a reboot the Agent will not start until the user logs in.
+Run: sudo loginctl enable-linger ${userInfo().username}`);
       return;
     }
     case 'win32': {
-      // Запуск при входе пользователя: без прав администратора и сохранённого пароля.
-      // `start` поднимает Launcher без окна консоли и сразу выходит.
+      // Start at user login: no administrator rights or saved password needed.
+      // `start` launches the Launcher with no console window and exits at once.
       const start = [process.execPath, launcher, 'start', '--home', home];
       execFileSync('reg', ['add', RUN_KEY, '/v', 'HorizonAgent', '/t', 'REG_SZ', '/d', start.map((a) => `"${a}"`).join(' '), '/f']);
       stopWindows(home);
@@ -84,13 +84,13 @@ WantedBy=default.target
       return;
     }
     default:
-      throw new Error(`установка сервиса на ${process.platform} не поддерживается`);
+      throw new Error(`service installation is not supported on ${process.platform}`);
   }
 }
 
 /**
- * Останавливает Launcher вместе с Agent и Engine.
- * ponytail: на Windows штатной остановки нет — дерево процессов завершается жёстко; Session продолжатся при следующем старте (#8).
+ * Stops the Launcher together with the Agent and Engine.
+ * ponytail: Windows has no graceful stop, so the process tree is killed; Sessions continue at the next start (#8).
  */
 function stopWindows(home: string) {
   const pid = join(home, 'launcher.pid');
@@ -113,6 +113,6 @@ export function uninstallService(home: string) {
       stopWindows(home);
       return;
     default:
-      throw new Error(`установка сервиса на ${process.platform} не поддерживается`);
+      throw new Error(`service installation is not supported on ${process.platform}`);
   }
 }

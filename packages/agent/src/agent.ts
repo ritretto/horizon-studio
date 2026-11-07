@@ -2,30 +2,32 @@ import { writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { join } from 'node:path';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { AccessLevel, AgentHello, TasksEvent, AgentInfo, PermissionMode, Request, Response } from '@horizon/protocol';
+import type { AccessLevel, AgentHello, TasksEvent, AgentInfo, EngineAvailability, EngineId, PermissionMode, Request, Response } from '@horizon/protocol';
 import { currentVersion, installVersion, lastUpdate, type AgentBuild } from '@horizon/launcher/versions';
 import pkg from '../package.json' with { type: 'json' };
 import { claudeCode, type Engine } from './engine.ts';
 import { Members, type Member } from './members.ts';
+import { codexForAgent } from './codex.ts';
 import { Tasks } from './tasks.ts';
 
 export interface StartedAgent {
   server: Server;
-  /** Штатная остановка: закрывает процессы Engine и сервер. */
+  /** Graceful stop: closes Engine processes and the server. */
   stop(): void;
-  /** Access Token первого admin, если Agent Home только что создан. */
+  /** Access Token of the first admin, if the Agent Home was just created. */
   adminToken?: string;
 }
 
 export interface AgentOptions {
   engine?: Engine;
-  /** Permission Mode для новых Task, если он не указан явно (из конфига Agent). */
+  codexEngine?: Engine;
+  /** Permission Mode for new Tasks when none is given (from the Agent config). */
   defaultPermissionMode?: PermissionMode;
-  /** Через сколько дней завершённая Task удаляется безвозвратно. */
+  /** How many days until a completed Task is permanently deleted. */
   completedRetentionDays?: number;
-  /** id сборки, из которой Agent запущен Launcher'ом. */
+  /** Id of the build the Launcher started this Agent from. */
   build?: string;
-  /** Перезапуск через Launcher на новой версии; без Launcher Agent Update невозможен. */
+  /** Restart on the new version through the Launcher; Agent Update is not possible without it. */
   restart?: () => void;
 }
 
@@ -34,16 +36,17 @@ const httpError = (status: number, message: string) => Object.assign(new Error(m
 
 export function startAgent(home: string, port: number, opts: AgentOptions = {}): Promise<StartedAgent> {
   const members = new Members(home);
-  const engine = opts.engine ?? claudeCode;
-  const tasks = new Tasks(home, engine, opts.completedRetentionDays ?? 30);
+  const engines = new Map<EngineId, Engine>([['claude-code', opts.engine ?? claudeCode]]);
+  if (!opts.engine || opts.codexEngine) engines.set('codex', opts.codexEngine ?? codexForAgent(home));
+  const tasks = new Tasks(home, engines, opts.completedRetentionDays ?? 30);
   tasks.purge();
   tasks.recover();
   setInterval(() => tasks.purge(), 60 * 60 * 1000).unref();
   const defaultPermissionMode = opts.defaultPermissionMode ?? 'ask';
   const adminToken = members.isEmpty ? members.create('admin', 'admin').token : undefined;
-  /** Открытые соединения: кто и по какому токену. Отзыв токена их закрывает. */
+  /** Open connections: who, and with which token. Revoking a token closes them. */
   const sockets = new Map<WebSocket, { member: Member; tokenId: string }>();
-  // Каждому соединению — его список Task; несколько изменений за один тик — одно событие.
+  // Each connection gets its own Task list; several changes in one tick make one event.
   let tasksChanged = false;
   tasks.onChange = () => {
     if (tasksChanged) return;
@@ -56,11 +59,11 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
 
   const info = (): AgentInfo => ({ version: pkg.version, build: opts.build, lastUpdate: lastUpdate(home) });
 
-  /** Agent Update: сборка ставится в versions/, Launcher перезапускает Agent на ней и откатит, если она не поднимется. */
+  /** Agent Update: the build goes into versions/, the Launcher restarts the Agent on it and rolls back if it fails to start. */
   async function update(req: IncomingMessage) {
     const auth = members.authenticate(bearer(req) ?? '');
     if (auth?.member.accessLevel !== 'admin') throw httpError(403, 'only admin can update Agent');
-    if (!opts.restart) throw httpError(409, 'Agent запущен без Launcher — обновление невозможно');
+    if (!opts.restart) throw httpError(409, 'Agent is running without the Launcher, so it cannot be updated');
     let body = '';
     for await (const chunk of req) body += chunk;
     const build = JSON.parse(body) as AgentBuild;
@@ -68,7 +71,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
     const id = await installVersion(home, build);
     if (id === currentVersion(home)) return { status: 'current', build: id };
     writeFileSync(join(home, 'next'), id);
-    setTimeout(opts.restart, 200); // сначала ответ уходит Studio
+    setTimeout(opts.restart, 200); // send the response to Studio first
     return { status: 'restarting', build: id };
   }
 
@@ -108,7 +111,7 @@ export function startAgent(home: string, port: number, opts: AgentOptions = {}):
           ws.close(1003, 'invalid JSON');
           return;
         }
-        handle(req, { info, member, tokenId, members, sockets, engine, tasks, ws, subscriptions, defaultPermissionMode })
+        handle(req, { info, member, tokenId, members, sockets, engines, tasks, ws, subscriptions, defaultPermissionMode })
           .catch((e): Response => ({ type: 'response', id: req.id, error: { message: e instanceof Error ? e.message : String(e) } }))
           .then((res) => ws.send(JSON.stringify(res)));
       });
@@ -128,7 +131,7 @@ interface Context {
   tokenId: string;
   members: Members;
   sockets: Map<WebSocket, { member: Member; tokenId: string }>;
-  engine: Engine;
+  engines: Map<EngineId, Engine>;
   tasks: Tasks;
   ws: WebSocket;
   subscriptions: Map<string, () => void>;
@@ -138,7 +141,12 @@ interface Context {
 const permissionModes: PermissionMode[] = ['ask', 'auto'];
 const accessLevels: AccessLevel[] = ['admin', 'user'];
 
-async function handle(req: Request, { info, member, tokenId, members, sockets, engine, tasks, ws, subscriptions, defaultPermissionMode }: Context): Promise<Response> {
+async function availability(engine: Engine): Promise<EngineAvailability> {
+  const result = (await engine.status?.()) ?? 'ready';
+  return typeof result === 'string' ? { status: result } : result;
+}
+
+async function handle(req: Request, { info, member, tokenId, members, sockets, engines, tasks, ws, subscriptions, defaultPermissionMode }: Context): Promise<Response> {
   const ok = (result: unknown): Response => ({ type: 'response', id: req.id, result });
   const fail = (message: string): Response => ({ type: 'response', id: req.id, error: { message } });
   const p = (req.params ?? {}) as Record<string, any>;
@@ -158,7 +166,7 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
     case 'member.revokeToken': {
       const error = members.revoke(p.memberId, p.tokenId);
       if (error) return fail(error);
-      // После ответа: отзыв собственного токена закрывает и это соединение.
+      // After the response: revoking your own token also closes this connection.
       setImmediate(() => sockets.forEach((a, s) => a.tokenId === p.tokenId && s.close(1008, 'token revoked')));
       return ok(null);
     }
@@ -166,14 +174,23 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
       const result: AgentHello = {
         ...info(),
         member: { id: member.id, name: member.name, accessLevel: member.accessLevel, tokenId },
-        engines: [{ id: 'claude-code', status: (await engine.status?.()) ?? 'ready' }],
+        engines: await Promise.all([...engines].map(async ([id, engine]) => ({ id, ...await availability(engine) }))),
       };
       return ok(result);
     }
-    case 'task.create':
+    case 'task.create': {
       if (typeof p.name !== 'string' || !p.name.trim()) return fail('name is required');
       if (p.permissionMode !== undefined && !permissionModes.includes(p.permissionMode)) return fail('invalid permissionMode');
-      return ok(tasks.create(p.name.trim(), member, p.permissionMode ?? defaultPermissionMode));
+      const candidates = p.engine === undefined ? [...engines.keys()] : [p.engine];
+      for (const id of candidates) {
+        const engine = engines.get(id);
+        if (!engine) return fail(`This Agent build does not support Engine "${id}". Install an Agent Update that supports this Engine.`);
+        const { status } = await availability(engine);
+        if (status === 'ready') return ok(tasks.create(p.name.trim(), member, p.permissionMode ?? defaultPermissionMode, id));
+        if (p.engine !== undefined) return fail(`Engine ${id} is ${status}`);
+      }
+      return fail('No ready Engine available');
+    }
     case 'task.list':
       return ok(tasks.list(member));
     case 'task.pause':
@@ -190,7 +207,7 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
       const session = tasks.session(p.sessionId, member);
       if (!session) return fail('unknown session');
       if (typeof p.text !== 'string' || !p.text.trim()) return fail('text is required');
-      if (!session.send(p.text)) return fail('Task на паузе или завершена');
+      if (!session.send(p.text)) return fail('Task is paused or completed');
       return ok(null);
     }
     case 'session.answer': {
@@ -203,7 +220,7 @@ async function handle(req: Request, { info, member, tokenId, members, sockets, e
       const session = tasks.session(p.sessionId, member);
       if (!session) return fail('unknown session');
       subscriptions.get(p.sessionId)?.();
-      // Ответ уходит после истории — это нормально: клиент различает их по type.
+      // The response goes out after the history. That is fine: the client tells them apart by type.
       subscriptions.set(p.sessionId, session.subscribe(Number(p.fromSeq) || 0, (e) => ws.send(JSON.stringify(e))));
       return ok(null);
     }

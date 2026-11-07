@@ -1,14 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { PermissionMode, SessionEvent, SessionItem, Task, TaskState } from '@horizon/protocol';
+import type { EngineId, PermissionMode, SessionEvent, SessionItem, Task, TaskState } from '@horizon/protocol';
 import type { Engine, EngineRun } from './engine.ts';
 import type { Member } from './members.ts';
 
 interface StoredSession {
   id: string;
   engineSessionId?: string;
-  /** Пауза пришлась на середину хода — при продолжении Engine надо попросить доделать. */
+  /** The pause came mid-turn, so on resume the Engine must be asked to finish. */
   pausedMidTurn?: boolean;
 }
 
@@ -17,43 +17,48 @@ interface StoredTask extends Task {
 }
 
 const RECOVER_PROMPT =
-  '[HorizonStudio] Agent был перезапущен (сбой, перезагрузка или обновление), и твой ход прервался. Проверь состояние (git status, незавершённые команды, lock-файлы), исправь что нужно и продолжай. Если не получается — опиши проблему и спроси пользователя.';
+  '[HorizonStudio] Agent was restarted (a crash, a reboot or an update), and your turn was interrupted. Check the state (git status, unfinished commands, lock files), fix what is needed and continue. If you cannot, describe the problem and ask the user.';
 
 const CONTINUE_PROMPT =
-  '[HorizonStudio] Task продолжена после паузы. Твой предыдущий ход был прерван — проверь состояние и продолжай с того места, где остановился.';
+  '[HorizonStudio] The Task was resumed after a pause. Your previous turn was interrupted. Check the state and continue from where you stopped.';
+
+const unavailableEngine = (id: EngineId): Engine => () => {
+  throw new Error(`This Agent build does not support the Task's Engine "${id}". Install an Agent Update that supports this Engine.`);
+};
 
 type Listener = (e: SessionEvent) => void;
 
 /**
- * Task и их Session в `<Agent Home>/tasks/<taskId>/`:
- * `task.json`, `workspace/` (Task Directory), `sessions/<sessionId>.jsonl` (журнал событий).
+ * Tasks and their Sessions in `<Agent Home>/tasks/<taskId>/`:
+ * `task.json`, `workspace/` (Task Directory), `sessions/<sessionId>.jsonl` (event log).
  */
 export class Tasks {
   private dir: string;
   private tasks = new Map<string, StoredTask>();
   private sessions = new Map<string, Session>();
-  private engine: Engine;
+  private engines: ReadonlyMap<EngineId, Engine>;
   private retentionMs: number;
-  /** Изменился список Task или состояние одной из них. */
+  /** The Task list or the state of a Task changed. */
   onChange = () => {};
 
-  constructor(home: string, engine: Engine, retentionDays: number) {
+  constructor(home: string, engines: ReadonlyMap<EngineId, Engine>, retentionDays: number) {
     this.dir = join(home, 'tasks');
-    this.engine = engine;
+    this.engines = engines;
     this.retentionMs = retentionDays * 24 * 60 * 60 * 1000;
     mkdirSync(this.dir, { recursive: true });
     for (const id of readdirSync(this.dir)) {
       const t: StoredTask = JSON.parse(readFileSync(join(this.dir, id, 'task.json'), 'utf8'));
+      t.engine ??= 'claude-code';
       this.tasks.set(t.id, t);
     }
   }
 
-  create(name: string, owner: Member, permissionMode: PermissionMode): Task {
+  create(name: string, owner: Member, permissionMode: PermissionMode, engine: EngineId): Task {
     const task: StoredTask = {
       id: randomUUID(),
       name,
       ownerId: owner.id,
-      engine: 'claude-code',
+      engine,
       permissionMode,
       state: 'active',
       createdAt: new Date().toISOString(),
@@ -70,14 +75,14 @@ export class Tasks {
     return [...this.tasks.values()].filter((t) => canSee(member, t)).map((t) => this.public(t));
   }
 
-  /** Session по id, если Member её видит. */
+  /** A Session by id, if the Member can see it. */
   session(sessionId: string, member: Member): Session | undefined {
     const task = [...this.tasks.values()].find((t) => t.sessions.some((s) => s.id === sessionId));
     if (!task || !canSee(member, task)) return;
     return this.load(task, sessionId);
   }
 
-  /** Пауза: все Session Task корректно останавливаются; id разговоров Engine сохранены. */
+  /** Pause: all Sessions of the Task stop cleanly; Engine conversation ids are kept. */
   pause(taskId: string, member: Member) {
     return this.transition(taskId, member, 'active', 'paused', (s) => s.stop('paused'));
   }
@@ -90,12 +95,12 @@ export class Tasks {
     return this.transition(taskId, member, ['active', 'paused'], 'completed', (s) => s.stop('completed'));
   }
 
-  /** Завершённая Task возвращается на паузу — дальше как обычно «Продолжить». */
+  /** A completed Task returns to paused; from there, Resume works as usual. */
   reopen(taskId: string, member: Member) {
     return this.transition(taskId, member, 'completed', 'paused', (s) => s.reopened());
   }
 
-  /** Безвозвратно удаляет завершённую Task; false — нет такой, нет прав или она не завершена. */
+  /** Permanently deletes a completed Task; false if it does not exist, access is denied or it is not completed. */
   delete(taskId: string, member: Member): boolean {
     const task = this.tasks.get(taskId);
     if (!task || !canSee(member, task) || task.state !== 'completed') return false;
@@ -103,7 +108,7 @@ export class Tasks {
     return true;
   }
 
-  /** После перезапуска Agent продолжает Session активных Task, прерванные посреди хода. */
+  /** After an Agent restart, continues Sessions of active Tasks that were interrupted mid-turn. */
   recover() {
     for (const task of this.tasks.values()) {
       if ((task.state ?? 'active') !== 'active') continue;
@@ -115,16 +120,16 @@ export class Tasks {
   }
 
   /**
-   * Штатная остановка Agent: закрывает процессы Engine, не трогая состояние Task —
-   * прерванные ходы продолжатся при следующем старте (recover).
-   * ponytail: при жёстком сбое (kill -9) процесс Engine живёт ещё несколько секунд и доделывает текущую команду;
-   * если это станет проблемой — запоминать PID через spawnClaudeCodeProcess и добивать при старте.
+   * Graceful Agent stop: closes Engine processes without touching Task state, so
+   * interrupted turns continue at the next start (recover).
+   * ponytail: after a hard crash (kill -9) the Engine process lives a few more seconds and finishes its current command;
+   * if that becomes a problem, record the PID through spawnClaudeCodeProcess and kill it at startup.
    */
   shutdown() {
     for (const s of this.sessions.values()) s.stop();
   }
 
-  /** Удаляет завершённые Task, срок хранения которых истёк. */
+  /** Deletes completed Tasks whose retention period has expired. */
   purge(now = Date.now()) {
     for (const t of this.tasks.values()) if (t.state === 'completed' && Date.parse(this.public(t).deleteAt!) <= now) this.remove(t);
   }
@@ -167,7 +172,7 @@ export class Tasks {
     let s = this.sessions.get(sessionId);
     if (!s) {
       const stored = task.sessions.find((x) => x.id === sessionId)!;
-      s = new Session(this.dir, task, stored, this.engine, () => this.save(task));
+      s = new Session(this.dir, task, stored, this.engines.get(task.engine) ?? unavailableEngine(task.engine), () => this.save(task));
       this.sessions.set(sessionId, s);
     }
     return s;
@@ -188,7 +193,7 @@ export class Session {
   private midTurn: boolean;
   private listeners = new Set<Listener>();
   private run?: EngineRun;
-  /** Номер запуска Engine: события остановленного запуска отбрасываются. */
+  /** Engine run number: events from a stopped run are discarded. */
   private generation = 0;
   private pending = new Map<string, (answer: { allow: boolean; always: boolean }) => void>();
   private task: StoredTask;
@@ -208,38 +213,51 @@ export class Session {
     this.midTurn = history.filter((e) => e.item.kind !== 'status').at(-1)?.item.kind !== 'turn_end' && history.length > 0;
   }
 
-  /** Ход шёл, когда Agent остановился (по журналу при загрузке). */
+  /** A turn was running when the Agent stopped (from the log at load time). */
   get interrupted() {
     return this.midTurn && !this.run;
   }
 
   recover() {
-    // Процесса Engine, ждавшего ответа на эти запросы, больше нет.
+    // The Engine process waiting for answers to these requests is gone.
     const history = this.history(0);
     const answered = new Set(history.map((e) => (e.item.kind === 'permission_answer' ? e.item.requestId : '')));
     for (const { item } of history)
       if (item.kind === 'permission' && !answered.has(item.requestId))
         this.append({ kind: 'permission_answer', requestId: item.requestId, allow: false, always: false });
     this.append({ kind: 'status', status: 'interrupted' });
-    this.send(RECOVER_PROMPT);
+    this.continueTurn(RECOVER_PROMPT);
   }
 
-  /** Отправляет сообщение; false, если Task на паузе или завершена. */
+  /** Sends a message; false if the Task is paused or completed. */
   send(text: string): boolean {
     if (this.task.state === 'paused' || this.task.state === 'completed') return false;
+    if (this.task.engine === 'codex' && this.run && this.midTurn)
+      throw new Error('Codex is working. Wait for the turn to finish or pause the Task.');
     this.append({ kind: 'user', text });
-    this.start().send(text);
+    this.dispatch(text);
     return true;
   }
 
-  /** Останавливает Engine; со статусом — отмечает это в журнале (пауза или завершение). */
+  private dispatch(text: string) {
+    try {
+      this.start().send(text);
+    } catch (error) {
+      this.generation++;
+      this.run?.close();
+      this.run = undefined;
+      this.clearPermissions();
+      this.append({ kind: 'turn_end', error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  /** Stops the Engine; with a status, records it in the log (pause or completion). */
   stop(status?: 'paused' | 'completed') {
     this.generation++;
     this.run?.close();
     this.run = undefined;
-    // Процесса Engine больше нет — висящие запросы разрешений снимаются.
-    for (const [requestId] of this.pending) this.append({ kind: 'permission_answer', requestId, allow: false, always: false });
-    this.pending.clear();
+    // The Engine process is gone, so pending permission requests are cleared.
+    this.clearPermissions();
     if (!status) return;
     this.stored.pausedMidTurn = this.midTurn;
     this.append({ kind: 'status', status });
@@ -254,11 +272,11 @@ export class Session {
     if (this.stored.pausedMidTurn) {
       this.stored.pausedMidTurn = false;
       this.save();
-      this.send(CONTINUE_PROMPT);
+      this.continueTurn(CONTINUE_PROMPT);
     }
   }
 
-  /** Ответ на запрос разрешения; false, если такого ожидающего запроса нет. */
+  /** Answer to a permission request; false if no such request is pending. */
   answer(requestId: string, allow: boolean, always: boolean): boolean {
     const resolve = this.pending.get(requestId);
     if (!resolve) return false;
@@ -268,11 +286,22 @@ export class Session {
     return true;
   }
 
-  /** Отдаёт историю с seq > fromSeq, затем новые события; возвращает отписку. */
+  /** Delivers history with seq > fromSeq, then new events; returns an unsubscribe function. */
   subscribe(fromSeq: number, listener: Listener): () => void {
     for (const e of this.history(fromSeq)) listener(e);
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  private clearPermissions() {
+    for (const requestId of this.pending.keys()) this.answer(requestId, false, false);
+  }
+
+  private continueTurn(fallback: string) {
+    if (this.stored.engineSessionId) return void this.send(fallback);
+    const item = this.history(0).findLast((event) => event.item.kind === 'user')?.item;
+    if (item?.kind === 'user') this.dispatch(item.text);
+    else this.send(fallback);
   }
 
   private start(): EngineRun {
@@ -281,13 +310,28 @@ export class Session {
     const live = () => generation === this.generation;
     this.run = this.engine({
       cwd: this.cwd,
+      permissionMode: this.task.permissionMode,
       resume: this.stored.engineSessionId,
-      onItem: (item) => live() && this.append(item),
+      initialInput: this.task.engine === 'codex' ? this.history(0)
+        .flatMap(({ item }) => item.kind === 'user' ? [item.text] : []).join('\n\n') : undefined,
+      onExit: () => {
+        if (!live()) return;
+        this.generation++;
+        this.run = undefined;
+        this.clearPermissions();
+      },
+      onItem: (item) => {
+        if (!live()) return;
+        if (item.kind === 'turn_end') this.clearPermissions();
+        this.append(item);
+      },
       onEngineSessionId: (id) => {
+        if (!live()) return;
         this.stored.engineSessionId = id;
         this.save();
       },
       askPermission: (req) => {
+        if (!live()) return Promise.resolve({ allow: false, always: false });
         if (this.task.permissionMode === 'auto') return Promise.resolve({ allow: true, always: false });
         const requestId = randomUUID();
         this.append({ kind: 'permission', requestId, ...req });

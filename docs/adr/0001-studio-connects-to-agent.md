@@ -1,8 +1,8 @@
-# Studio подключается к Agent, Agent слушает только localhost
+# Studio connects to the Agent, and the Agent listens only on localhost
 
-Направление подключения — Studio → Agent, а не исходящее соединение Agent → Studio (как у GitHub Actions runners). Пользователь создаёт в Studio Connection к конкретному Agent. Agent всегда слушает только `127.0.0.1`, поэтому удалённый Agent доступен лишь через SSH-туннель по ключам. Туннель Studio поднимает, держит и переподключает сама. Так один Agent обслуживает сколько угодно Studio, не зная их адресов, а сетевую защиту целиком берёт на себя SSH.
+The connection goes from Studio to the Agent, not outbound from the Agent to Studio (as with GitHub Actions runners). The user creates a Connection in Studio to a specific Agent. An Agent always listens only on `127.0.0.1`, so a remote Agent is reachable only through an SSH tunnel with keys. Studio opens, maintains and reconnects the tunnel itself. This way one Agent serves any number of Studios without knowing their addresses, and SSH takes care of network security entirely.
 
 ## Considered Options
 
-- **Agent → Studio (исходящий WebSocket)** — работает за NAT без туннелей, но привязывает Agent к адресам конкретных Studio. Отклонено.
-- **Прямое подключение в доверенной подсети** — открытый порт с удалённым запуском ИИ доступен любому в сети. Отклонено; TLS-защиту канала можно добавить позже.
+- **Agent → Studio (outbound WebSocket)**: works behind NAT with no tunnels, but ties the Agent to the addresses of specific Studios. Rejected.
+- **Direct connection in a trusted subnet**: an open port that can start AI remotely is available to anyone on the network. Rejected; TLS protection for the channel can be added later.

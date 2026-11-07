@@ -1,13 +1,16 @@
 import { test } from 'node:test';
+import { spawn } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import WebSocket from 'ws';
 import type { SessionEvent, Task } from '@horizon/protocol';
 import { startAgent } from './agent.ts';
 import type { Engine } from './engine.ts';
+import { createCodexEngine } from './codex.ts';
 
 function connect(port: number, token: string) {
   return new Promise<WebSocket>((resolve, reject) => {
@@ -17,13 +20,56 @@ function connect(port: number, token: string) {
   });
 }
 
-test('первый старт выдаёт admin-токен, по нему работает agent.info, чужой токен отклоняется', async () => {
+for (const engineId of ['claude-code', 'codex'] as const) {
+  test(`${engineId}: a dead Engine is replaced on the next user message`, async (t) => {
+    let launches = 0;
+    const dying: Engine = (opts) => {
+      const launch = ++launches;
+      let dead = false;
+      return {
+        send() {
+          if (dead) return;
+          setImmediate(() => {
+            opts.onEngineSessionId('saved-thread');
+            if (launch === 1) {
+              dead = true;
+              opts.onItem({ kind: 'turn_end', error: 'process exited' });
+              opts.onExit();
+            } else {
+              assert.equal(opts.resume, 'saved-thread');
+              opts.onItem({ kind: 'text', text: 'restarted' });
+              opts.onItem({ kind: 'turn_end' });
+            }
+          });
+        },
+        close() { dead = true; },
+      };
+    };
+    const home = mkdtempSync(join(tmpdir(), 'horizon-exit-test-'));
+    const agent = await startAgent(home, 0, { engine: dying, codexEngine: dying });
+    t.after(() => agent.stop());
+    const c = client(await connect((agent.server.address() as AddressInfo).port, agent.adminToken!));
+    t.after(() => c.close());
+    const task: Task = await c.call('task.create', { name: 'Crash recovery', engine: engineId });
+    const sessionId = task.sessions[0].id;
+    await c.call('session.subscribe', { sessionId });
+    await c.call('session.send', { sessionId, text: 'first' });
+    await c.until(2);
+    await c.call('session.send', { sessionId, text: 'retry' });
+    assert.equal(launches, 2, 'must not send the retry into a dead Engine');
+    const events = await c.until(5);
+    assert.deepEqual(events[3].item, { kind: 'text', text: 'restarted' });
+    assert.equal((await c.call('task.list'))[0].state, 'active');
+  });
+}
+
+test('first start issues an admin token, agent.info works with it, an unknown token is rejected', async () => {
   const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
   const noCredentials: Engine = Object.assign(() => ({ send() {}, close() {} }), { status: async () => 'no credentials' as const });
   const { server, adminToken } = await startAgent(home, 0, { engine: noCredentials });
   const { port } = server.address() as AddressInfo;
   assert.ok(adminToken);
-  assert.ok(!readFileSync(join(home, 'members.json'), 'utf8').includes(adminToken), 'токен не хранится открыто');
+  assert.ok(!readFileSync(join(home, 'members.json'), 'utf8').includes(adminToken), 'the token is not stored in plain text');
 
   const ws = await connect(port, adminToken);
   ws.send(JSON.stringify({ type: 'request', id: 1, method: 'agent.info' }));
@@ -36,14 +82,14 @@ test('первый старт выдаёт admin-токен, по нему ра�
 
   await assert.rejects(connect(port, 'wrong'), /401/);
 
-  // Повторный старт на том же Agent Home не создаёт нового admin.
+  // Starting again on the same Agent Home does not create a new admin.
   server.close();
   const again = await startAgent(home, 0, { engine: noCredentials });
   assert.equal(again.adminToken, undefined);
   again.server.close();
 });
 
-/** Фейковый Engine: отвечает эхом и запоминает, с каким resume его запустили. */
+/** Fake Engine: echoes back and remembers which resume value it was started with. */
 const resumes: (string | undefined)[] = [];
 const echo: Engine = ({ resume, onItem, onEngineSessionId }) => {
   resumes.push(resume);
@@ -69,13 +115,19 @@ function client(ws: WebSocket) {
       ws.send(JSON.stringify({ type: 'request', id, method, params }));
     }).then((m) => m.result);
   const until = async (n: number) => {
-    while (events.length < n) await new Promise((r) => setTimeout(r, 5));
+    const deadline = Date.now() + 5_000;
+    while (events.length < n) {
+      assert.ok(Date.now() < deadline, `Timed out waiting for ${n} Session events, received ${events.length}`);
+      await new Promise((r) => setTimeout(r, 5));
+    }
     return events;
   };
+
+
   return { call, until, close: () => ws.close() };
 }
 
-test('Task: создание, Session с историей по seq, продолжение после перезапуска Agent', async () => {
+test('Task: creation, Session with history by seq, continuing after an Agent restart', async () => {
   const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
   const a1 = await startAgent(home, 0, { engine: echo });
   const c1 = client(await connect((a1.server.address() as AddressInfo).port, a1.adminToken!));
@@ -83,27 +135,27 @@ test('Task: создание, Session с историей по seq, продол
   const task: Task = await c1.call('task.create', { name: 'OAuth' });
   const sessionId = task.sessions[0].id;
   await c1.call('session.subscribe', { sessionId, fromSeq: 0 });
-  await c1.call('session.send', { sessionId, text: 'привет' });
+  await c1.call('session.send', { sessionId, text: 'hello' });
   const events = await c1.until(3);
   assert.deepEqual(events.map((e) => [e.seq, e.item.kind]), [[1, 'user'], [2, 'text'], [3, 'turn_end']]);
-  assert.deepEqual(events[1].item, { kind: 'text', text: 'echo: привет' });
+  assert.deepEqual(events[1].item, { kind: 'text', text: 'echo: hello' });
   c1.close();
   a1.server.close();
 
-  // Новый процесс Agent на том же Agent Home: Task на месте, история с seq, Engine продолжает разговор.
+  // New Agent process on the same Agent Home: the Task is there, history keeps its seq, the Engine continues the conversation.
   const a2 = await startAgent(home, 0, { engine: echo });
   const c2 = client(await connect((a2.server.address() as AddressInfo).port, a1.adminToken!));
   assert.equal((await c2.call('task.list')).length, 1);
   await c2.call('session.subscribe', { sessionId, fromSeq: 1 });
   assert.deepEqual((await c2.until(2)).map((e) => e.seq), [2, 3]);
-  await c2.call('session.send', { sessionId, text: 'ещё' });
+  await c2.call('session.send', { sessionId, text: 'more' });
   assert.equal((await c2.until(4))[3].seq, 5);
   assert.deepEqual(resumes, [undefined, 'engine-session-1']);
   c2.close();
   a2.server.close();
 });
 
-/** Фейковый Engine: на каждое сообщение просит разрешение на Bash и сообщает решение. */
+/** Fake Engine: asks for permission to run Bash on every message and reports the decision. */
 const asker: Engine = ({ onItem, askPermission }) => ({
   send: async () => {
     const { allow, always } = await askPermission({ tool: 'Bash', input: { command: 'ls' } });
@@ -113,7 +165,7 @@ const asker: Engine = ({ onItem, askPermission }) => ({
   close: () => {},
 });
 
-test('Permission Mode: ask ждёт ответа пользователя, auto разрешает сам', async () => {
+test('Permission Mode: ask waits for the user, auto allows on its own', async () => {
   const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
   const a = await startAgent(home, 0, { engine: asker, defaultPermissionMode: 'auto' });
   const c = client(await connect((a.server.address() as AddressInfo).port, a.adminToken!));
@@ -133,10 +185,10 @@ test('Permission Mode: ask ждёт ответа пользователя, auto 
     { kind: 'text', text: 'allowed always' },
     { kind: 'turn_end' },
   ]);
-  assert.equal(await c.call('session.answer', { sessionId: askSession, requestId, allow: true }), undefined, 'повторный ответ отклоняется');
+  assert.equal(await c.call('session.answer', { sessionId: askSession, requestId, allow: true }), undefined, 'a repeated answer is rejected');
 
   const auto: Task = await c.call('task.create', { name: 'auto' });
-  assert.equal(auto.permissionMode, 'auto', 'по умолчанию — из конфига Agent');
+  assert.equal(auto.permissionMode, 'auto', 'the default comes from the Agent config');
   await c.call('session.subscribe', { sessionId: auto.sessions[0].id, fromSeq: 0 });
   await c.call('session.send', { sessionId: auto.sessions[0].id, text: 'go' });
   const autoEvents = (await c.until(8)).slice(5);
@@ -147,7 +199,7 @@ test('Permission Mode: ask ждёт ответа пользователя, auto 
   a.server.close();
 });
 
-test('Пауза останавливает Engine посреди хода, переживает перезапуск, продолжение просит Engine доделать', async () => {
+test('Pause stops the Engine mid-turn and survives a restart; resuming asks the Engine to finish', async () => {
   const log: string[] = [];
   const slow: Engine = ({ resume, onItem, onEngineSessionId }) => {
     log.push(`start resume=${resume}`);
@@ -155,7 +207,7 @@ test('Пауза останавливает Engine посреди хода, пе
     return {
       send: (text) => {
         log.push(`send ${text.slice(0, 15)}`);
-        setImmediate(() => onItem({ kind: 'text', text: 'работаю…' })); // ход не заканчивается
+        setImmediate(() => onItem({ kind: 'text', text: 'working…' })); // the turn never ends
       },
       close: () => log.push('close'),
     };
@@ -166,20 +218,20 @@ test('Пауза останавливает Engine посреди хода, пе
   const task: Task = await c1.call('task.create', { name: 'long' });
   const sessionId = task.sessions[0].id;
   await c1.call('session.subscribe', { sessionId, fromSeq: 0 });
-  await c1.call('session.send', { sessionId, text: 'делай' });
+  await c1.call('session.send', { sessionId, text: 'do it' });
   await c1.until(2);
 
   assert.equal((await c1.call('task.pause', { taskId: task.id })).state, 'paused');
   assert.deepEqual((await c1.until(3))[2].item, { kind: 'status', status: 'paused' });
-  assert.equal(await c1.call('session.send', { sessionId, text: 'ещё' }), undefined, 'на паузе сообщения не принимаются');
+  assert.equal(await c1.call('session.send', { sessionId, text: 'more' }), undefined, 'messages are not accepted while paused');
   c1.close();
   a1.server.close();
 
-  // После перезапуска Agent Task остаётся на паузе и сама не продолжается.
+  // After an Agent restart the Task stays paused and does not continue on its own.
   const a2 = await startAgent(home, 0, { engine: slow });
   const c2 = client(await connect((a2.server.address() as AddressInfo).port, a1.adminToken!));
   assert.equal((await c2.call('task.list'))[0].state, 'paused');
-  assert.deepEqual(log, ['start resume=undefined', 'send делай', 'close']);
+  assert.deepEqual(log, ['start resume=undefined', 'send do it', 'close']);
 
   await c2.call('session.subscribe', { sessionId, fromSeq: 3 });
   assert.equal((await c2.call('task.resume', { taskId: task.id })).state, 'active');
@@ -191,7 +243,7 @@ test('Пауза останавливает Engine посреди хода, пе
   a2.server.close();
 });
 
-test('Завершение, переоткрытие, удаление вручную и по сроку хранения', async () => {
+test('Completing, reopening, deleting manually and by retention period', async () => {
   const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
   const a1 = await startAgent(home, 0, { engine: echo });
   const c1 = client(await connect((a1.server.address() as AddressInfo).port, a1.adminToken!));
@@ -200,13 +252,13 @@ test('Завершение, переоткрытие, удаление вруч�
   const sessionId = kept.sessions[0].id;
   await c1.call('session.subscribe', { sessionId, fromSeq: 0 });
 
-  assert.equal(await c1.call('task.delete', { taskId: kept.id }), undefined, 'активную Task удалить нельзя');
+  assert.equal(await c1.call('task.delete', { taskId: kept.id }), undefined, 'an active Task cannot be deleted');
   const done: Task = await c1.call('task.complete', { taskId: kept.id });
   assert.equal(done.state, 'completed');
   assert.equal(Date.parse(done.deleteAt!) - Date.parse(done.completedAt!), 30 * 24 * 60 * 60 * 1000);
   assert.deepEqual((await c1.until(1))[0].item, { kind: 'status', status: 'completed' });
-  assert.equal(await c1.call('session.send', { sessionId, text: 'x' }), undefined, 'завершённая не принимает сообщения');
-  assert.equal(await c1.call('task.pause', { taskId: kept.id }), undefined, 'из completed — только reopen');
+  assert.equal(await c1.call('session.send', { sessionId, text: 'x' }), undefined, 'a completed Task does not accept messages');
+  assert.equal(await c1.call('task.pause', { taskId: kept.id }), undefined, 'from completed, only reopen is allowed');
 
   const reopened: Task = await c1.call('task.reopen', { taskId: kept.id });
   assert.equal(reopened.state, 'paused');
@@ -215,14 +267,14 @@ test('Завершение, переоткрытие, удаление вруч�
 
   await c1.call('task.complete', { taskId: doomed.id });
   assert.equal(await c1.call('task.delete', { taskId: doomed.id }), null);
-  assert.ok(!existsSync(join(home, 'tasks', doomed.id)), 'каталог Task удалён');
+  assert.ok(!existsSync(join(home, 'tasks', doomed.id)), 'the Task directory is deleted');
   assert.deepEqual((await c1.call('task.list')).map((t: Task) => t.name), ['kept']);
 
   await c1.call('task.complete', { taskId: kept.id });
   c1.close();
   a1.server.close();
 
-  // Срок хранения 0 дней — Agent удаляет завершённую Task при старте.
+  // With a retention period of 0 days, the Agent deletes a completed Task at startup.
   const a2 = await startAgent(home, 0, { engine: echo, completedRetentionDays: 0 });
   const c2 = client(await connect((a2.server.address() as AddressInfo).port, a1.adminToken!));
   assert.deepEqual(await c2.call('task.list'), []);
@@ -231,9 +283,9 @@ test('Завершение, переоткрытие, удаление вруч�
   a2.server.close();
 });
 
-test('После перезапуска Agent прерванные Session продолжаются сами, Task на паузе — нет', async () => {
+test('After an Agent restart interrupted Sessions continue on their own, paused Tasks do not', async () => {
   const starts: string[] = [];
-  // «ask» — висит на запросе разрешения, иначе — ход, который не заканчивается.
+  // "ask" hangs on a permission request; otherwise the turn never ends.
   const stuck: Engine = ({ resume, onItem, onEngineSessionId, askPermission }) => {
     onEngineSessionId(`conv-${starts.length}`);
     starts.push(`resume=${resume}`);
@@ -251,35 +303,35 @@ test('После перезапуска Agent прерванные Session пр�
   const working: Task = await c1.call('task.create', { name: 'working', permissionMode: 'ask' });
   const asking: Task = await c1.call('task.create', { name: 'asking', permissionMode: 'ask' });
   const paused: Task = await c1.call('task.create', { name: 'paused' });
-  await c1.call('session.send', { sessionId: working.sessions[0].id, text: 'делай' });
+  await c1.call('session.send', { sessionId: working.sessions[0].id, text: 'do it' });
   await c1.call('session.send', { sessionId: asking.sessions[0].id, text: 'ask' });
-  await c1.call('session.send', { sessionId: paused.sessions[0].id, text: 'делай' });
+  await c1.call('session.send', { sessionId: paused.sessions[0].id, text: 'do it' });
   await c1.call('task.pause', { taskId: paused.id });
   await new Promise((r) => setTimeout(r, 20));
   c1.close();
-  a1.server.close(); // «сбой»: процесс Agent пропал посреди ходов
+  a1.server.close(); // a "crash": the Agent process disappears mid-turn
 
   const a2 = await startAgent(home, 0, { engine: stuck });
   const c2 = client(await connect((a2.server.address() as AddressInfo).port, a1.adminToken!));
   await c2.call('session.subscribe', { sessionId: working.sessions[0].id, fromSeq: 2 });
   const w = await c2.until(3);
   assert.deepEqual(w[0].item, { kind: 'status', status: 'interrupted' });
-  assert.match((w[1].item as { text: string }).text, /^\[HorizonStudio\] Agent был перезапущен/);
+  assert.match((w[1].item as { text: string }).text, /^\[HorizonStudio\] Agent was restarted/);
   assert.deepEqual(w[2].item, { kind: 'text', text: 'got: [HorizonStudio]' });
 
   await c2.call('session.subscribe', { sessionId: asking.sessions[0].id, fromSeq: 2 });
   const q = (await c2.until(6)).slice(3);
-  assert.equal(q[0].item.kind, 'permission_answer', 'висевший запрос разрешения снят');
+  assert.equal(q[0].item.kind, 'permission_answer', 'the pending permission request is cleared');
   assert.deepEqual(q[1].item, { kind: 'status', status: 'interrupted' });
 
   assert.equal((await c2.call('task.list')).find((t: Task) => t.id === paused.id).state, 'paused');
-  // 3 запуска до перезапуска + по одному на две прерванные Session, все с resume.
+  // 3 starts before the restart plus one for each of the two interrupted Sessions, all with resume.
   assert.deepEqual(starts.slice(3).sort(), ['resume=conv-0', 'resume=conv-1']);
   c2.close();
   a2.server.close();
 });
 
-test('Member: admin создаёт user и токены, user видит только свои Task, отзыв токена закрывает соединение', async () => {
+test('Member: admin creates users and tokens, a user sees only their own Tasks, revoking a token closes the connection', async () => {
   const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
   const a = await startAgent(home, 0, { engine: echo });
   const port = (a.server.address() as AddressInfo).port;
@@ -288,9 +340,9 @@ test('Member: admin создаёт user и токены, user видит тол�
   const { id: bobId, token: bobToken } = await admin.call('member.create', { name: 'bob', accessLevel: 'user' });
   const bobWs = await connect(port, bobToken);
   const bob = client(bobWs);
-  assert.equal(await bob.call('member.list'), undefined, 'user не управляет Member');
+  assert.equal(await bob.call('member.list'), undefined, 'a user cannot manage Members');
 
-  // Каждому соединению Agent сам присылает его список Task при изменениях.
+  // The Agent sends each connection its own Task list when something changes.
   const lastTasks = (ws: WebSocket) => {
     let last: Task[] = [];
     ws.on('message', (d) => {
@@ -313,7 +365,7 @@ test('Member: admin создаёт user и токены, user видит тол�
   const listed = await admin.call('member.list');
   const bobInfo = listed.find((m: any) => m.id === bobId);
   assert.equal(bobInfo.tokens.length, 2);
-  assert.ok(!JSON.stringify(listed).includes('hash'), 'хэши токенов не отдаются');
+  assert.ok(!JSON.stringify(listed).includes('hash'), 'token hashes are not returned');
 
   const closed = new Promise((r) => bobWs.once('close', r));
   assert.equal(await admin.call('member.revokeToken', { memberId: bobId, tokenId: bobInfo.tokens[0].id }), null);
@@ -321,14 +373,14 @@ test('Member: admin создаёт user и токены, user видит тол�
   await assert.rejects(connect(port, bobToken), /401/);
   client(await connect(port, bobToken2)).close();
 
-  // Последний токен admin отозвать нельзя.
+  // The last admin token cannot be revoked.
   const adminInfo = listed.find((m: any) => m.accessLevel === 'admin');
   assert.equal(await admin.call('member.revokeToken', { memberId: adminInfo.id, tokenId: adminInfo.tokens[0].id }), undefined);
   admin.close();
   a.stop();
 });
 
-test('Agent Update: PUT /update ставит сборку и просит Launcher перезапустить; только admin и только под Launcher', async () => {
+test('Agent Update: PUT /update installs the build and asks the Launcher to restart; admin only, and only under the Launcher', async () => {
   const home = mkdtempSync(join(tmpdir(), 'horizon-agent-'));
   let restarts = 0;
   const a = await startAgent(home, 0, { engine: echo, restart: () => restarts++ });
@@ -357,6 +409,208 @@ test('Agent Update: PUT /update ставит сборку и просит Launch
     headers: { authorization: `Bearer ${plain.adminToken}` },
     body: build,
   });
-  assert.equal(r.status, 409, 'без Launcher обновление невозможно');
+  assert.equal(r.status, 409, 'updating is not possible without the Launcher');
   plain.stop();
+});
+
+test('Codex: Engine selection, completed items, approvals and resume after restart', { timeout: 15_000 }, async (t) => {
+  const script = `
+    const { createInterface } = require('node:readline');
+    const assert = require('node:assert/strict');
+    const write = (message) => console.log(JSON.stringify(message));
+    const notify = (method, params) => write({ method, params: { threadId: 'codex-thread', ...params } });
+    let initialized = false;
+    let resumed = false;
+    createInterface({ input: process.stdin }).on('line', (line) => {
+      const { id, method, params, result } = JSON.parse(line);
+      const reply = (result) => write({ id, result });
+      switch (method) {
+        case 'initialize':
+          assert.equal(params.clientInfo.name, 'horizon_studio');
+          return reply({});
+        case 'initialized':
+          initialized = true;
+          return;
+        case 'account/read':
+          assert.equal(initialized, true);
+          return reply({ account: { type: 'chatgpt' }, requiresOpenaiAuth: true });
+        case 'thread/resume':
+          assert.equal(params.threadId, 'codex-thread');
+          resumed = true;
+        case 'thread/start':
+          assert.equal(initialized, true);
+          assert.equal(params.approvalPolicy, 'untrusted');
+          assert.equal(params.sandbox, 'workspace-write');
+          return reply({ thread: { id: 'codex-thread' } });
+        case 'turn/start':
+          assert.equal(params.threadId, 'codex-thread');
+          reply({ turn: { id: 'turn' } });
+          if (resumed) {
+            notify('item/agentMessage/delta', { itemId: 'answer2', delta: 'ignored' });
+            notify('item/completed', { item: { type: 'agentMessage', id: 'answer2', text: 'resumed' } });
+            return notify('turn/completed', { turn: { status: 'completed' } });
+          }
+          notify('item/started', { item: { type: 'commandExecution', id: 'tool', command: 'ls' } });
+          return write({ id: 'approval', method: 'item/commandExecution/requestApproval', params: {
+            threadId: 'codex-thread', itemId: 'tool', availableDecisions: ['accept', 'acceptForSession', 'decline'],
+          } });
+        default:
+          assert.equal(id, 'approval');
+          notify('item/completed', { item: { type: 'commandExecution', id: 'tool', status: 'completed', exitCode: 0 } });
+          notify('item/agentMessage/delta', { itemId: 'answer', delta: result.decision });
+          notify('item/completed', { item: { type: 'agentMessage', id: 'answer', text: result.decision } });
+          return notify('turn/completed', { turn: { status: 'completed' } });
+      }
+    });
+  `;
+  const codexEngine = createCodexEngine((cwd) => spawn(process.execPath, ['-e', script], { cwd }));
+  const home = mkdtempSync(join(tmpdir(), 'horizon-codex-test-'));
+  const a1 = await startAgent(home, 0, { engine: echo, codexEngine });
+  t.after(() => a1.stop());
+  const token = a1.adminToken!;
+  const c1 = client(await connect((a1.server.address() as AddressInfo).port, token));
+  t.after(() => c1.close());
+  assert.deepEqual((await c1.call('agent.info')).engines, [
+    { id: 'claude-code', status: 'ready' }, { id: 'codex', status: 'ready', loginMethod: 'chatgpt' },
+  ]);
+  assert.equal((await c1.call('task.create', { name: 'default' })).engine, 'claude-code');
+  assert.equal(await c1.call('task.create', { name: 'invalid', engine: 'invalid' }), undefined);
+  const task: Task = await c1.call('task.create', { name: 'Codex', engine: 'codex', permissionMode: 'ask' });
+  assert.equal(task.engine, 'codex');
+  const sessionId = task.sessions[0].id;
+  await c1.call('session.subscribe', { sessionId });
+  await c1.call('session.send', { sessionId, text: 'first' });
+  const events = await c1.until(2);
+  const permission = events[1].item;
+  assert.equal(permission.kind, 'permission');
+  assert.equal(await c1.call('session.send', { sessionId, text: 'while busy' }), undefined);
+  await c1.call('session.answer', { sessionId, requestId: permission.requestId, allow: true, always: true });
+  await c1.until(7);
+  assert.deepEqual(events.map(({ item }) => item.kind),
+    ['user', 'permission', 'permission_answer', 'tool', 'tool_result', 'text', 'turn_end']);
+  assert.deepEqual(events[5].item, { kind: 'text', text: 'acceptForSession' });
+  await c1.call('session.send', { sessionId, text: 'second' });
+  await c1.until(9);
+  const nextPermission = events[8].item;
+  assert.equal(nextPermission.kind, 'permission');
+  await c1.call('session.answer', { sessionId, requestId: nextPermission.requestId, allow: false });
+  await c1.until(14);
+  assert.deepEqual(events[12].item, { kind: 'text', text: 'decline' });
+  c1.close();
+  a1.stop();
+
+  const a2 = await startAgent(home, 0, { engine: echo, codexEngine });
+  t.after(() => a2.stop());
+  const c2 = client(await connect((a2.server.address() as AddressInfo).port, token));
+  t.after(() => c2.close());
+  assert.equal((await c2.call('task.list')).find((entry: Task) => entry.id === task.id).engine, 'codex');
+  await c2.call('session.subscribe', { sessionId, fromSeq: 14 });
+  await c2.call('session.send', { sessionId, text: 'second' });
+  const resumed = await c2.until(3);
+  assert.deepEqual(resumed[1].item, { kind: 'text', text: 'resumed' });
+  assert.deepEqual(resumed[2].item, { kind: 'turn_end' });
+});
+
+test('Codex app-server crash is resumed by Session on the next message', { timeout: 10_000 }, async (t) => {
+  let launches = 0;
+  const fixture = fileURLToPath(new URL('./fixtures/codex-server.mjs', import.meta.url));
+  const codexEngine = Object.assign(createCodexEngine(() =>
+    spawn(process.execPath, [fixture, launches++ === 0 ? 'crash' : 'missing-rollout'])), {
+    status: async () => 'ready' as const,
+  });
+  const home = mkdtempSync(join(tmpdir(), 'horizon-process-exit-'));
+  const agent = await startAgent(home, 0, { engine: echo, codexEngine });
+  t.after(() => agent.stop());
+  const c = client(await connect((agent.server.address() as AddressInfo).port, agent.adminToken!));
+  t.after(() => c.close());
+  const task: Task = await c.call('task.create', { name: 'Real subprocess crash', engine: 'codex' });
+  const sessionId = task.sessions[0].id;
+  await c.call('session.subscribe', { sessionId });
+  await c.call('session.send', { sessionId, text: 'crash' });
+  const events = await c.until(2);
+  assert.equal(events[1].item.kind, 'turn_end');
+  await c.call('session.send', { sessionId, text: 'retry' });
+  await c.until(5);
+  assert.equal(launches, 2);
+  assert.deepEqual(events[3].item, { kind: 'text', text: 'crash\n\nretry' }, 'replay the original instructions and the retry');
+  const stored = JSON.parse(readFileSync(join(home, 'tasks', task.id, 'task.json'), 'utf8'));
+  assert.equal(stored.sessions[0].engineSessionId, 'thread-recovered');
+  assert.deepEqual(events.flatMap(({ item }) => item.kind === 'user' ? [item.text] : []), ['crash', 'retry']);
+  await c.call('session.send', { sessionId, text: 'next message' });
+  await c.until(8);
+  assert.deepEqual(events[6].item, { kind: 'text', text: 'next message' }, 'restore input only for the replacement thread');
+  assert.equal(launches, 2);
+});
+
+
+for (const engineId of ['claude-code', 'codex'] as const) {
+  test(`${engineId}: pause before thread creation replays input without duplicating history`, async (t) => {
+    const prompts: string[] = [];
+    const slow: Engine = () => ({ send(text) { prompts.push(text); }, close() {} });
+    const home = mkdtempSync(join(tmpdir(), 'horizon-early-pause-'));
+    const agent = await startAgent(home, 0, { engine: slow, codexEngine: slow });
+    t.after(() => agent.stop());
+    const c = client(await connect((agent.server.address() as AddressInfo).port, agent.adminToken!));
+    t.after(() => c.close());
+    const task: Task = await c.call('task.create', { name: 'Early pause', engine: engineId });
+    await c.call('session.subscribe', { sessionId: task.sessions[0].id });
+    await c.call('session.send', { sessionId: task.sessions[0].id, text: 'original task instructions' });
+    await c.call('task.pause', { taskId: task.id });
+    await c.call('task.resume', { taskId: task.id });
+    assert.deepEqual(prompts, ['original task instructions', 'original task instructions']);
+    const events = await c.until(3);
+    assert.deepEqual(events.map((event) => event.item), [
+      { kind: 'user', text: 'original task instructions' },
+      { kind: 'status', status: 'paused' }, { kind: 'status', status: 'resumed' },
+    ]);
+  });
+
+  test(`${engineId}: Agent restart before thread creation replays input once in history`, async (t) => {
+    const prompts: string[] = [];
+    const slow: Engine = () => ({ send(text) { prompts.push(text); }, close() {} });
+    const home = mkdtempSync(join(tmpdir(), 'horizon-early-restart-'));
+    const first = await startAgent(home, 0, { engine: slow, codexEngine: slow });
+    const c1 = client(await connect((first.server.address() as AddressInfo).port, first.adminToken!));
+    t.after(() => { c1.close(); first.stop(); });
+    const task: Task = await c1.call('task.create', { name: 'Early restart', engine: engineId });
+    const sessionId = task.sessions[0].id;
+    await c1.call('session.send', { sessionId, text: 'original task instructions' });
+    c1.close();
+    first.stop();
+    const second = await startAgent(home, 0, { engine: slow, codexEngine: slow });
+    t.after(() => second.stop());
+    const c2 = client(await connect((second.server.address() as AddressInfo).port, first.adminToken!));
+    t.after(() => c2.close());
+    await c2.call('session.subscribe', { sessionId });
+    const events = await c2.until(2);
+    assert.deepEqual(prompts, ['original task instructions', 'original task instructions']);
+    assert.deepEqual(events.map(({ item }) => item), [
+      { kind: 'user', text: 'original task instructions' }, { kind: 'status', status: 'interrupted' },
+    ]);
+  });
+}
+
+
+test('Task creation defaults to the first ready Engine and rejects unavailable Engines', async (t) => {
+  let claudeReady = false;
+  let codexReady = true;
+  const claude = Object.assign((opts: Parameters<Engine>[0]) => echo(opts), {
+    status: async () => claudeReady ? 'ready' as const : 'no credentials' as const,
+  });
+  const codexEngine = Object.assign((opts: Parameters<Engine>[0]) => echo(opts), {
+    status: async () => codexReady ? 'ready' as const : 'not installed' as const,
+  });
+  const home = mkdtempSync(join(tmpdir(), 'horizon-engine-choice-'));
+  const agent = await startAgent(home, 0, { engine: claude, codexEngine });
+  t.after(() => agent.stop());
+  const c = client(await connect((agent.server.address() as AddressInfo).port, agent.adminToken!));
+  t.after(() => c.close());
+  assert.equal(await c.call('task.create', { name: 'Explicit unavailable', engine: 'claude-code' }), undefined);
+  assert.equal((await c.call('task.create', { name: 'Default Codex' })).engine, 'codex');
+  claudeReady = true;
+  assert.equal((await c.call('task.create', { name: 'Default Claude' })).engine, 'claude-code');
+  claudeReady = false;
+  codexReady = false;
+  assert.equal(await c.call('task.create', { name: 'None ready' }), undefined);
+  assert.equal((await c.call('task.list')).length, 2);
 });

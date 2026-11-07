@@ -5,12 +5,12 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { UpdateResult } from '@horizon/protocol';
 
-// Раскладка Agent Home:
+// Agent Home layout:
 //   versions/<id>/{agent.mjs, package.json, node_modules → deps/<hash>/node_modules}
-//   deps/<hash>/   — зависимости, общие для версий с одинаковым набором (нативный Claude Code ~350 МБ)
-//   current        — подтверждённая версия; previous — предыдущая (для отката)
-//   next           — версия на пробу: Launcher запускает её, Agent подтверждает после старта
-//   update.json    — результат последнего обновления
+//   deps/<hash>/   — dependencies shared by versions with the same set (native Claude Code is ~350 MB)
+//   current        — the confirmed version; previous — the one before it (for rollback)
+//   next           — the version on trial: the Launcher starts it, the Agent confirms it after starting
+//   update.json    — the result of the last update
 
 export interface AgentBuild {
   package: { version: string; dependencies?: Record<string, string> };
@@ -20,7 +20,7 @@ export interface AgentBuild {
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 const read = (home: string, name: string) => (existsSync(join(home, name)) ? readFileSync(join(home, name), 'utf8').trim() : undefined);
 
-/** id версии: номер из package.json + хэш кода — разные сборки одного номера не перепутаются. */
+/** Version id: the number from package.json plus a code hash, so builds with the same number stay distinct. */
 export const versionId = (build: AgentBuild) => `${build.package.version}-${sha(build.agent).slice(0, 8)}`;
 
 export const currentVersion = (home: string) => read(home, 'current');
@@ -29,7 +29,7 @@ export const lastUpdate = (home: string): UpdateResult | undefined =>
   existsSync(join(home, 'update.json')) ? JSON.parse(readFileSync(join(home, 'update.json'), 'utf8')) : undefined;
 export const writeUpdate = (home: string, r: UpdateResult) => writeFileSync(join(home, 'update.json'), JSON.stringify(r, null, 2));
 
-/** Раскладывает сборку в versions/<id>, ставя зависимости, если такого набора ещё нет. Возвращает id. */
+/** Unpacks a build into versions/<id>, installing dependencies if this set is new. Returns the id. */
 export async function installVersion(home: string, build: AgentBuild): Promise<string> {
   const id = versionId(build);
   const dir = join(home, 'versions', id);
@@ -44,17 +44,17 @@ export async function installVersion(home: string, build: AgentBuild): Promise<s
       cwd: deps,
       shell: process.platform === 'win32',
     });
-    mkdirSync(join(deps, 'node_modules'), { recursive: true }); // без зависимостей npm его не создаёт
+    mkdirSync(join(deps, 'node_modules'), { recursive: true }); // npm does not create it when there are no dependencies
   }
 
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'agent.mjs'), build.agent);
   writeFileSync(join(dir, 'package.json'), JSON.stringify(build.package, null, 2));
-  symlinkSync(join(deps, 'node_modules'), join(dir, 'node_modules'), 'junction'); // junction — без прав администратора на Windows
+  symlinkSync(join(deps, 'node_modules'), join(dir, 'node_modules'), 'junction'); // a junction needs no administrator rights on Windows
   return id;
 }
 
-/** Делает `id` текущей версией (установка или подтверждённое обновление) и удаляет всё, кроме неё и предыдущей. */
+/** Makes `id` the current version (install or confirmed update) and deletes everything except it and the previous one. */
 export function makeCurrent(home: string, id: string) {
   const current = currentVersion(home);
   if (current && current !== id) writeFileSync(join(home, 'previous'), current);
